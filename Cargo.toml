@@ -1,0 +1,33 @@
+[package]
+name = "iota-migration-cli"
+version = "0.1.0"
+authors = ["Minyong Li <minyong.li@iota.org>"]
+edition = "2021"
+description = "A command line tool for easy migration from the legacy IOTA network to the Chrysalis IOTA network"
+
+[dependencies]
+bee-ternary = "0.5.2"
+clap = "2.34.0"
+env_logger = "0.9.0"
+futures = "0.3.19"
+log = "0.4.14"
+tokio = { version = "1.14.0", features = ["rt-multi-thread", "parking_lot", "macros"] }
+rayon = "1.5.1"
+bee-message = "0.1.6"
+
+[dependencies.iota-crypto]
+version = "0.9.1"
+default-features = false
+features = [
+    "random",
+    "bip39-en",
+    "ternary_keys",
+    "ternary_hashes",
+    "wots_deprecated_do_not_use", # we're migrating, sorry
+    "kerl_deprecated_do_not_use",
+]
+
+[dependencies.iota-legacy]
+git = "https://github.com/iotaledger/iota.rs"
+rev = "656279e628e5f9d9288477cd4d2dc4170ea4bf0e"
+package = "iota-core"
