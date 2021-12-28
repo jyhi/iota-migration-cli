@@ -59,15 +59,15 @@ pub struct Addrs {
     inner: Vec<AddrInfo>,
 }
 
-impl Addrs {
-    pub fn new() -> Self {
-        Self { inner: Vec::new() }
-    }
+// impl Addrs {
+//     pub fn new() -> Self {
+//         Self { inner: Vec::new() }
+//     }
 
-    pub fn from_inner(inner: Vec<AddrInfo>) -> Self {
-        Self { inner }
-    }
-}
+//     pub fn from_inner(inner: Vec<AddrInfo>) -> Self {
+//         Self { inner }
+//     }
+// }
 
 impl Deref for Addrs {
     type Target = Vec<AddrInfo>;

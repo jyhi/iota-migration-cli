@@ -16,13 +16,12 @@ use crypto::signatures::ternary::PublicKey;
 use iota_legacy::client::builder::ClientBuilder as LegacyClientBuilder;
 use log::*;
 use rayon::prelude::*;
-use std::sync::{Arc, Mutex};
 // use iota_legacy::client::builder::Network as LegacyNetwork;
 use iota_legacy::client::migration;
 use iota_legacy::client::response::InputData;
 use iota_legacy::client::AddressInput;
 use iota_legacy::client::GetAddressesBuilder;
-use iota_legacy::transaction::bundled::{Address, BundledTransaction, BundledTransactionField};
+use iota_legacy::transaction::bundled::{Address, BundledTransactionField};
 
 #[allow(deprecated)]
 fn verify_address(seed: String, addr: AddrInfo, security_level: u8) -> Result<AddrInfo, ()> {
@@ -64,348 +63,6 @@ fn verify_address(seed: String, addr: AddrInfo, security_level: u8) -> Result<Ad
     }
 }
 
-fn verify_addresses(
-    seed: &str,
-    addrs: &Addrs,
-    security_level: u8,
-    parallel: bool,
-) -> Result<Addrs, ()> {
-    let verified_addrs = Arc::new(Mutex::new(Addrs::new()));
-
-    // The task to run regardless of parallelism
-    let task_addr_eq = |addr: &AddrInfo| {
-        if let Ok(vaddr) = verify_address(seed.to_string(), addr.clone(), security_level) {
-            debug!("accept matching address {}", vaddr.addr);
-            verified_addrs.lock().unwrap().push(vaddr);
-        } else {
-            warn!("reject mismatch address {}", addr.addr);
-        }
-    };
-
-    if parallel {
-        addrs.par_iter().for_each(task_addr_eq);
-    } else {
-        addrs.iter().for_each(task_addr_eq);
-    }
-
-    if verified_addrs.lock().unwrap().len() == 0 {
-        warn!("no matching address is accepted!");
-        return Err(());
-    }
-
-    // Test balances and spending statuses
-    debug!("connecting to the legacy IOTA network to check address information...");
-
-    let mut legacy_client = LegacyClientBuilder::new()
-        .node(crate::LEGACY_TESTNET_NODE_URL)
-        .unwrap()
-        .permanode(crate::PERMANODE_URL)
-        .unwrap()
-        // .network(LegacyNetwork::Devnet) // ???
-        .quorum(true)
-        .build()
-        .unwrap();
-
-    let prepared_addrs: Vec<AddressInput> = {
-        verified_addrs
-            .lock()
-            .unwrap() // XXX
-            .iter()
-            .map(|addr| {
-                AddressInput {
-                    address: Address::try_from_inner(
-                        // Have to use a legacy bee_ternary because of the legacy client!
-                        iota_legacy::ternary::TryteBuf::try_from_str(&addr.addr)
-                            .unwrap()
-                            .as_trits()
-                            .encode(),
-                    )
-                    .unwrap(),
-                    index: addr.idx.try_into().unwrap(), // XXX: usize -> u64
-                    security_lvl: security_level,
-                }
-            })
-            .collect()
-    };
-
-    let result = {
-        let async_rt = tokio::runtime::Runtime::new().unwrap();
-        async_rt.block_on(
-            legacy_client
-                .get_ledger_account_data_for_migration()
-                .with_addresses(prepared_addrs)
-                .finish(),
-        )
-    };
-
-    let unspent_addrs = match result {
-        Ok((total_balance, input_data, any_spent)) => {
-            debug!(
-                "total balance {}, {} input data, any spent {}",
-                total_balance,
-                input_data.len(),
-                any_spent
-            );
-
-            let accepted_data = {
-                input_data
-                    .iter()
-                    .zip(verified_addrs.lock().unwrap().iter())
-                    .filter_map(|(input_addr, verified_addr)| {
-                        debug!("comparing {}", verified_addr.addr);
-                        trace!("{:?}", input_addr);
-
-                        let is_balance_match = input_addr.balance == (verified_addr.bal as u64);
-                        let is_unspent = !input_addr.spent;
-
-                        if !is_balance_match {
-                            warn!("rejecting {}: balance mismatch", verified_addr.addr);
-                            return None;
-                        }
-
-                        if !is_unspent {
-                            warn!("rejecting {}: spent", verified_addr.addr);
-                            return None;
-                        }
-
-                        Some(verified_addr.clone())
-                    })
-                    .collect()
-            };
-
-            Addrs::from_inner(accepted_data)
-        }
-        Err(err) => {
-            error!("failed to fetch address data: {}", err);
-            return Err(());
-        }
-    };
-
-    Ok(unspent_addrs)
-}
-
-fn sign_migration_bundles(
-    _args: &Args,
-    seed: &str,
-    account: &ChrysalisAccount,
-    security_level: u8,
-    addr_bundles: &[Vec<&AddrInfo>],
-) -> Result<Vec<Vec<BundledTransaction>>, ()> {
-    debug!("preparing migration bundles...");
-
-    let mut legacy_client = LegacyClientBuilder::new()
-        .node(crate::LEGACY_TESTNET_NODE_URL)
-        .unwrap()
-        .permanode(crate::PERMANODE_URL)
-        .unwrap()
-        // .network(LegacyNetwork::Devnet) // ???
-        .quorum(true)
-        .build()
-        .unwrap();
-
-    // Use the first address in the first account of the seed as the target address
-    let chrysalis_addr = {
-        let generated_addrs = GetAddressesBuilder::new(
-            &iota_legacy::client::Seed::from_bytes(account.seed()).unwrap(),
-        )
-        .with_account_index(0)
-        .with_range(0..1)
-        .finish()
-        .unwrap(); // XXX
-
-        generated_addrs[0]
-    };
-
-    info!("target Chrysalis address: {}", chrysalis_addr);
-
-    let prepared_bundles: Vec<Vec<AddressInput>> = addr_bundles
-        .iter()
-        .map(|bundle| {
-            bundle
-                .iter()
-                .map(|addr| {
-                    AddressInput {
-                        address: Address::try_from_inner(
-                            // Have to use a legacy bee_ternary because of the legacy client!
-                            iota_legacy::ternary::TryteBuf::try_from_str(&addr.addr)
-                                .unwrap()
-                                .as_trits()
-                                .encode(),
-                        )
-                        .unwrap(),
-                        index: addr.idx as u64, // XXX: usize -> u64
-                        security_lvl: security_level,
-                    }
-                })
-                .collect()
-        })
-        .collect();
-
-    // XXX: the following 2 steps are unfortunately needed because the input of
-    // migration::create_migration_bundle() is Vec<InputData>, which comes from a query from a
-    // client instance. What is done below is to fetch this data again (it might have been fetched
-    // during verify_address), and filter it, in order to make our data usable with
-    // migration::create_migration_bundle().
-    // FIXME: consider merging verify_address() and sign_migration_bundles()
-
-    debug!("connecting to the legacy IOTA network to check address information...");
-
-    let results = {
-        let async_rt = tokio::runtime::Runtime::new().unwrap();
-
-        async_rt.block_on(async {
-            let mut results = Vec::new();
-
-            // XXX: this unfortunately cannot be parallelized, as a Mutex is not Send and cannot be
-            // used during an await, the lock may lock forever.
-            for bundle in prepared_bundles.into_iter() {
-                let data = legacy_client
-                    .get_ledger_account_data_for_migration()
-                    .with_addresses(bundle)
-                    .finish()
-                    .await;
-
-                results.push(data);
-            }
-
-            results
-        })
-    };
-
-    // Abort on any error
-    {
-        let mut any_error = false;
-
-        for result in results.iter() {
-            if let Err(ref e) = result {
-                error!("failed to fetch address information: {}, aborting.", e);
-                any_error = true;
-            }
-        }
-
-        if any_error {
-            return Err(());
-        }
-    }
-
-    debug!("filtering data...");
-
-    let filtered_bundles: Vec<Vec<InputData>> = results
-        .into_iter()
-        .zip(addr_bundles.iter())
-        .filter_map(|(input_bundle, addr_bundle)| {
-            if input_bundle.is_ok() {
-                Some((input_bundle.unwrap(), addr_bundle))
-            } else {
-                None
-            }
-        })
-        .filter(|((input_bal, input_data, _), addr_bundle)| {
-            let input_bundle_balance: u64 = *input_bal;
-            let addr_bundle_balance: u64 = addr_bundle
-                .iter()
-                .map(|bundle| bundle.bal as u64) // XXX
-                .sum();
-
-            let is_balance_match = input_bundle_balance == addr_bundle_balance;
-            let is_addresses_match = input_data.iter().zip(addr_bundle.iter()).fold(
-                true,
-                |acc, (input_bundle, addr_bundle)| {
-                    // let is_addr_match = input_bundle.address == addr_bundle.addr; // FIXME
-                    let is_idx_match = input_bundle.index == addr_bundle.idx as u64;
-                    let is_bal_match = input_bundle.balance == addr_bundle.bal as u64;
-
-                    acc && (is_idx_match && is_bal_match)
-                },
-            );
-
-            is_balance_match && is_addresses_match
-        })
-        .map(|((_, input_data, _), _)| input_data)
-        .collect();
-
-    debug!("creating and signing the bundles...");
-    let created_bundles = {
-        let async_rt = tokio::runtime::Runtime::new().unwrap();
-        let mut bundles = Vec::new();
-
-        for bundle in filtered_bundles.iter() {
-            let created = async_rt.block_on(migration::create_migration_bundle(
-                &legacy_client,
-                chrysalis_addr,
-                bundle.clone(),
-            ));
-
-            bundles.push(created.unwrap()); // XXX
-        }
-
-        bundles
-    };
-
-    // sign_migration_bundle() returns Vec<BundledTransaction>...
-    let signed_bundles: Vec<Vec<BundledTransaction>> = created_bundles
-        .into_iter()
-        .zip(filtered_bundles.into_iter())
-        .map(|(created_bundle, filtered_bundle)| {
-            let ternary_seed: iota_legacy::crypto::keys::ternary::seed::Seed =
-                seed.parse().unwrap(); // XXX
-            migration::sign_migration_bundle(ternary_seed, created_bundle, filtered_bundle)
-        })
-        .filter_map(|result| result.ok()) // XXX
-        .collect();
-
-    info!("signed {} bundles", signed_bundles.len());
-
-    Ok(signed_bundles)
-}
-
-fn send_migration_bundles(
-    bundles: &[Vec<BundledTransaction>],
-    mwm: u8,
-) -> Result<Vec<Vec<BundledTransaction>>, ()> {
-    let results: Vec<_> = {
-        let async_rt = tokio::runtime::Runtime::new().unwrap();
-
-        async_rt.block_on(async {
-            let mut results = Vec::new();
-
-            for bundle in bundles {
-                let legacy_client = LegacyClientBuilder::new()
-                    .node(crate::LEGACY_TESTNET_NODE_URL)
-                    .unwrap()
-                    .permanode(crate::PERMANODE_URL)
-                    .unwrap()
-                    // .network(LegacyNetwork::Devnet) // ???
-                    .quorum(true)
-                    .build()
-                    .unwrap();
-
-                let result = legacy_client
-                    .send_trytes()
-                    .with_trytes(bundle.clone())
-                    .with_min_weight_magnitude(mwm)
-                    .finish()
-                    .await;
-
-                results.push(result);
-            }
-
-            results
-                .into_iter()
-                .filter_map(|result| match result {
-                    Ok(r) => Some(r),
-                    Err(e) => {
-                        error!("failed to send a bundle: {}; ignoring", e);
-                        None
-                    }
-                })
-                .collect()
-        })
-    };
-
-    Ok(results)
-}
-
 pub fn search_and_migrate(
     _args: Args,
     _account: ChrysalisAccount,
@@ -421,115 +78,399 @@ pub fn collect_and_migrate(
     seed: String,
     addrs: Addrs,
 ) -> Result<(), ()> {
-    let mut addrs = if args.skip_verification {
-        debug!("skipping address verification");
-        addrs
-    } else {
-        debug!("verifying addresses");
+    debug!("seed {}: performing address matches", seed);
 
-        let addr_results = verify_addresses(
-            &seed,
-            &addrs,
-            args.security_level,
-            args.parallel_mode.is_parallel_search(),
-        );
-
-        let verified_addrs = if let Ok(addrs) = addr_results {
-            if addrs.len() == 0 {
-                warn!("no address is verified for seed {}, nothing to do!", seed);
-                return Err(());
-            }
-
-            addrs
+    // The task to run below, regardless of parallelism
+    let addr_match = |addr: &AddrInfo| {
+        if let Ok(matched) = verify_address(seed.clone(), addr.clone(), args.security_level) {
+            debug!("seed {}: accept matching address {}", seed, addr.addr);
+            Some(matched)
         } else {
-            error!("failed to verify addresses, exiting.");
-            return Err(());
-        };
-
-        debug!("verified {} address(es)", verified_addrs.len());
-        trace!("{:?}", verified_addrs);
-
-        verified_addrs
+            warn!("seed {}: reject mismatched address {}", seed, addr.addr);
+            None
+        }
     };
 
-    if addrs.len() == 0 {
-        warn!("no address is provided for seed {}, nothing to do!", seed);
+    // Match addresses with the given seed. If multiple seeds are in a file and multiple addresses
+    // are in a file, then there must be addresses that don't belong to some other seeds. This
+    // process filters out any address that doesn't belong to [seed], as this task is only for one
+    // seed. [addrs] is moved into and shadowed.
+    let addrs: Vec<AddrInfo> = if args.parallel_mode.is_parallel_search() {
+        addrs.par_iter().filter_map(addr_match).collect()
+    } else {
+        addrs.iter().filter_map(addr_match).collect()
+    };
+
+    // If all addresses are filtered out, exit early
+    if addrs.is_empty() {
+        warn!("seed {}: no matching address is accepted! exiting.", seed);
         return Err(());
     }
 
-    debug!("sorting addresses");
-    addrs.sort_unstable_by_key(|info| info.bal);
+    // This instance from an older version of iota-client connects to the legacy network.
+    let mut legacy_client = LegacyClientBuilder::new()
+        .node(&args.legacy_node)
+        .unwrap()
+        .permanode(&args.permanode)
+        .unwrap()
+        // .network(LegacyNetwork::Devnet) // ???
+        .quorum(true)
+        .build()
+        .unwrap();
 
-    debug!("partitioning addresses into at-least-1-Mi bundles");
-    let addr_bundles: Vec<Vec<&AddrInfo>> =
-        addrs
+    // This prepared version of address information input is unfortunately required by the legacy
+    // client.
+    let addrs_prep: Vec<AddressInput> = addrs
+        .into_iter()
+        .map(|addr| {
+            AddressInput {
+                address: Address::try_from_inner(
+                    // Have to use a legacy bee_ternary because of the legacy client!
+                    iota_legacy::ternary::TryteBuf::try_from_str(&addr.addr)
+                        .unwrap()
+                        .as_trits()
+                        .encode(),
+                )
+                .unwrap(),
+                index: addr.idx as u64, // XXX: usize -> u64
+                security_lvl: args.security_level,
+            }
+        })
+        .collect();
+
+    // Fetch information from the legacy network. The result here are used for several purposes:
+    // 1. Address information verification (against those provided); this is not implemented
+    // 2. Input for next steps (the legacy client require exactly this piece of information)
+    debug!(
+        "seed {}: connecting to the legacy IOTA network to check address information...",
+        seed
+    );
+    let addrs_queried_results = {
+        let async_rt = tokio::runtime::Runtime::new().unwrap();
+
+        async_rt.block_on(
+            legacy_client
+                .get_ledger_account_data_for_migration()
+                .with_addresses(addrs_prep)
+                .finish(),
+        )
+    };
+
+    // Exit early if there is any error. The resulting tuple is destructed then.
+    let (balance, mut input_data, any_spent) = match addrs_queried_results {
+        Ok(info) => info,
+        Err(err) => {
+            error!(
+                "seed {}: failed to fetch address information: {}",
+                seed, err
+            );
+            return Err(());
+        }
+    };
+
+    info!(
+        "seed {}: queried total balance {}, {} inputs, {}",
+        seed,
+        balance,
+        input_data.len(),
+        if any_spent {
+            "some or all have been spent"
+        } else {
+            "none has been spent"
+        }
+    );
+
+    // If there isn't any input data, then there's nothing we can do. Exit early.
+    if balance == 0 || input_data.is_empty() {
+        warn!("seed {}: nothing can be migrated! exiting", seed);
+        return Err(());
+    }
+
+    // Sort addresses by their balances to ensure that addresses with small balances get bundled
+    // together to try avoiding dust inputs.
+    debug!("seed {}: sorting addresses by balances", seed);
+    input_data.sort_unstable_by_key(|data| data.balance);
+
+    // Bundle address, with every bundle containing at least 1 Mi to go over the dust allowance.
+    // FIXME: there is nothing preventing a bundle from having too many inputs (increasing PoW time)
+    // XXX: the last bundle doesn't necessarily go beyond the dust allowance
+    debug!(
+        "seed {}: partitioning addresses into at-least-1-Mi bundles",
+        seed
+    );
+    let bundles: Vec<Vec<InputData>> =
+        input_data
             .iter()
-            .fold(Vec::new(), |acc: Vec<Vec<&AddrInfo>>, info| {
+            .fold(Vec::new(), |acc: Vec<Vec<InputData>>, data| {
                 let mut new_acc = acc.clone();
+                let data = data.clone();
                 let last = new_acc.pop();
 
                 if let Some(mut last) = last {
                     // Check if the last segment contains at least 1 Mi
-                    let last_sum: usize = last.iter().map(|info| info.bal).sum();
+                    let last_sum: u64 = last.iter().map(|data| data.balance).sum();
 
                     if last_sum > 1_000_000 {
                         // Push back the last segment, create a new segment
-                        let new = vec![info];
+                        let new = vec![data];
                         new_acc.push(last);
                         new_acc.push(new);
                     } else {
                         // Continue adding into the last segment
-                        last.push(info);
+                        last.push(data);
                         new_acc.push(last);
                     }
                 } else {
                     // This is the first segment, just create and put in
-                    let new = vec![info];
+                    let new = vec![data];
                     new_acc.push(new);
                 }
 
                 new_acc
             });
 
-    trace!("{:?}", addr_bundles);
+    debug!("seed {}: created {} bundles", seed, bundles.len());
 
-    debug!("checking for dusts");
-    let dust_bundles: Vec<usize> = addr_bundles
-        .iter()
-        .map(|bundle| bundle.iter().map(|info| info.bal).sum())
-        .filter(|balance| *balance < 1_000_000)
+    // Bundles that are still dusts need to be filtered out, sorry.
+    debug!("seed {}: checking for dusts", seed);
+    let (bundles, bundles_dust): (Vec<Vec<InputData>>, Vec<Vec<InputData>>) =
+        bundles.into_iter().partition(|bundle| {
+            let bundle_balance: u64 = bundle.iter().map(|data| data.balance).sum();
+
+            bundle_balance >= 1_000_000
+        });
+
+    if !bundles_dust.is_empty() {
+        for bundle_dust in bundles_dust {
+            let bundle_dust_summary: Vec<_> = bundle_dust.iter().map(|data| data.index).collect();
+            warn!(
+                "seed {}: this bundle contains < 1 Mi balance, which is considered as a dust input\
+                , and will not be migrated: {:?}",
+                seed, bundle_dust_summary
+            );
+        }
+    } else {
+        debug!("seed {}: no dust bundle is found", seed);
+    }
+
+    // Use the first address in the first account of the Chrysalis seed as the target address.
+    debug!("seed {}: generating target Chrysalis address...", seed);
+    let chrysalis_addr = {
+        let generated_addrs = GetAddressesBuilder::new(
+            &iota_legacy::client::Seed::from_bytes(account.seed()).unwrap(),
+        )
+        .with_account_index(args.target_account)
+        .with_range(args.target_address..args.target_address + 1)
+        .finish()
+        .unwrap(); // XXX
+
+        generated_addrs[0]
+    };
+
+    // Create (prepare) migration bundles using the migration facilities in the legacy client.
+    debug!("seed {}: preparing migration bundles...", seed);
+    let bundles_prepared_results: Vec<_> = {
+        let async_rt = tokio::runtime::Runtime::new().unwrap();
+
+        bundles
+            .iter()
+            .map(|bundle| {
+                async_rt.block_on(migration::create_migration_bundle(
+                    &legacy_client,
+                    chrysalis_addr,
+                    bundle.clone(),
+                ))
+            })
+            .collect()
+    };
+
+    // Remove any error.
+    let bundles_prepared = bundles_prepared_results.into_iter().filter_map(|result| {
+        match result {
+            Ok(bundle) => Some(bundle),
+            Err(err) => {
+                // FIXME: which bundle?
+                error!(
+                    "seed {}: failed to create a migration bundle: {}, skipping",
+                    seed, err
+                );
+                None
+            }
+        }
+    });
+    // .collect(); // avoid using `collect()` when not needed
+
+    // Sign on the migration bundles.
+    debug!("seed {}: signing migration bundles...", seed);
+    let bundles_signed_results = bundles_prepared
+        // .into_iter() // avoid using `collect()` when not needed
+        .zip(bundles.into_iter())
+        .map(|(prepared_bundle, input_data)| {
+            // This is an older version of [Seed]
+            let ternary_seed: iota_legacy::crypto::keys::ternary::seed::Seed =
+                seed.parse().unwrap();
+
+            migration::sign_migration_bundle(ternary_seed, prepared_bundle, input_data)
+        });
+    // .collect(); // avoid using `collect()` when not needed
+
+    // Remove any error.
+    let bundles_signed: Vec<_> = bundles_signed_results
+        // .into_iter() // avoid using `collect()` when not needed
+        .filter_map(|result| {
+            match result {
+                Ok(bundle) => Some(bundle),
+                Err(err) => {
+                    // FIXME: which bundle?
+                    error!(
+                        "seed {}: failed to sign on a migration bundle: {}, skipping",
+                        seed, err
+                    );
+                    None
+                }
+            }
+        })
         .collect();
 
-    if !dust_bundles.is_empty() {
-        for dust_bundle in dust_bundles {
-            warn!("this bundle contains < 1 Mi balance, which is considered as a dust input, and will not be migrated: {:?}", dust_bundle);
-        }
-    } else {
-        debug!("no dust bundle");
-    }
+    debug!("seed {}: signed {} bundles", seed, bundles_signed.len());
 
-    debug!("signing bundles");
-    let signed_bundles =
-        match sign_migration_bundles(&args, &seed, &account, args.security_level, &addr_bundles) {
-            Ok(v) => v,
-            Err(_) => {
-                error!("failed to sign bundles");
-                return Err(());
-            }
+    // Send the migration bundles to the legacy network.
+    debug!("seed {}: sending bundles", seed);
+    if args.dry_run {
+        info!(
+            "seed {}: dry-run - pretending that the bundles have been sent successfully",
+            seed
+        );
+
+        // Print out information about this transaction
+        let from_addr_summaries = input_data
+            .iter()
+            .map(|data| {
+                // I need to perform this many steps to get a displayable address!
+                format!(
+                    "\n- {}",
+                    data.address
+                        .to_inner()
+                        .encode::<iota_legacy::ternary::T3B1Buf>()
+                        .as_trytes()
+                        .iter()
+                        .fold(String::new(), |mut acc, tryte| {
+                            acc.push_str(&tryte.to_string());
+                            acc
+                        })
+                )
+            })
+            .reduce(|mut acc, summary| {
+                acc.push_str(&summary);
+                acc
+            });
+
+        println!(
+            "=== Migration Report ===\n\
+             Seed: {}\n\
+             From (Legacy IOTA) address(es):{}\n\
+             To (Chrysalis) address: {}\n\
+             Migration bundle hash(es): (dry-run)\n\
+             ========================",
+            seed,
+            if let Some(s) = from_addr_summaries {
+                s
+            } else {
+                String::new()
+            },
+            chrysalis_addr,
+        );
+    } else {
+        let bundles_sent_results: Vec<_> = {
+            let async_rt = tokio::runtime::Runtime::new().unwrap();
+
+            bundles_signed
+                .into_iter()
+                .map(|bundle| {
+                    async_rt.block_on(
+                        legacy_client
+                            .send_trytes()
+                            .with_trytes(bundle)
+                            .with_min_weight_magnitude(args.minimum_weight_magnitude)
+                            .finish(),
+                    )
+                })
+                .collect()
         };
 
-    if args.dry_run {
-        debug!("dry-run - pretending that the operation has succedded");
-    } else {
-        debug!("sending bundles");
-        let migrated_bundles = send_migration_bundles(&signed_bundles, 12);
-        if let Err(_) = migrated_bundles {
-            error!("failure during sending migration bundles - some or all weren't sent.");
-            return Err(());
-        }
+        // Remove any error.
+        let bundles_sent: Vec<_> = bundles_sent_results
+            .into_iter()
+            .filter_map(|result| {
+                match result {
+                    Ok(bundle) => Some(bundle),
+                    Err(err) => {
+                        // FIXME: which bundle?
+                        error!(
+                            "seed {}: failed to send a migration bundle: {}, dropping",
+                            seed, err
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        // Print out information about this transaction
+        let from_addr_summaries = input_data
+            .iter()
+            .map(|data| {
+                // I need to perform this many steps to get a displayable address!
+                format!(
+                    "\n- {}",
+                    data.address
+                        .to_inner()
+                        .encode::<iota_legacy::ternary::T3B1Buf>()
+                        .as_trytes()
+                        .iter()
+                        .fold(String::new(), |mut acc, tryte| {
+                            acc.push_str(&tryte.to_string());
+                            acc
+                        })
+                )
+            })
+            .reduce(|mut acc, summary| {
+                acc.push_str(&summary);
+                acc
+            });
+
+        let bundle_summaries = bundles_sent
+            .iter()
+            .flatten()
+            .map(|bundle| format!("\n- {}", bundle.bundle()))
+            .reduce(|mut acc, summary| {
+                acc.push_str(&summary);
+                acc
+            });
+
+        println!(
+            "=== Migration Report ===\n\
+             Seed: {}\n\
+             From (Legacy IOTA) address(es):{}\n\
+             To (Chrysalis) address: {}\n\
+             Migration bundle hash(es):{}\n\
+             ========================",
+            seed,
+            if let Some(s) = from_addr_summaries {
+                s
+            } else {
+                String::new()
+            },
+            chrysalis_addr,
+            if let Some(s) = bundle_summaries {
+                s
+            } else {
+                String::new()
+            }
+        );
     }
 
-    debug!("migration finished");
-
+    // Viola!
+    debug!("seed {}: migration finished", seed);
     Ok(())
 }

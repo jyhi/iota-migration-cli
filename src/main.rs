@@ -70,20 +70,23 @@ fn main() {
 
     // Prompt what is to be done
     if num_addrs == 0 {
-        println!(
-            "Migrating from addresses generated from index {} to index {} for \
-            each of the {} seed(s).",
-            args.search_from, args.search_to, num_seeds
-        );
+        // println!(
+        //     "Migrating from addresses generated from index {} to index {} for \
+        //     each of the {} seed(s).",
+        //     args.search_from, args.search_to, num_seeds
+        // );
+        unimplemented!();
     } else {
         println!(
-            "Migrating from the given {} addresses for each of the {} seed(s).",
-            num_addrs, num_seeds
+            "Migrating from the given {} addresses for each of the {} seed(s).\n\
+             Legacy Node: {}\n\
+             Chrysalis Node: {}",
+            num_addrs, num_seeds, args.legacy_node, args.chrysalis_node
         );
     }
 
     if args.yes {
-        eprintln!("Continue? [Y/n] y - specified from command line");
+        eprintln!("Continue? y - specified from command line");
     } else {
         loop {
             eprint!("Continue? [Y/n] ");
@@ -133,11 +136,16 @@ fn main() {
         let account = ChrysalisAccount::new();
 
         println!(
-            "===\n\
-             Generated a new Chrysalis account as the target of migration:\n\
-             - Mnemonics: {}\n\
-             SAVE IT!\n\
-             ===",
+            "\n\
+             !!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\
+             !!! New Chrysalis Account !!!\n\
+             !!!  SAVE THE MNEMONICS!  !!!\n\
+             \n\
+             {}\n\
+             \n\
+             !!!  SAVE THE MNEMONICS!  !!!\n\
+             !!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\
+            ",
             account.mnemonics(),
         );
 
@@ -174,5 +182,5 @@ fn main() {
         seeds.iter().map(migrate).collect()
     };
 
-    eprintln!("{:?}", results);
+    debug!("{:?}", results);
 }
