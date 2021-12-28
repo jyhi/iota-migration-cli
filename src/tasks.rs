@@ -470,7 +470,7 @@ pub fn collect_and_migrate(
         );
     }
 
-    // Viola!
+    // Voilà!
     debug!("seed {}: migration finished", seed);
     Ok(())
 }
