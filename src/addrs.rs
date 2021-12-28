@@ -100,6 +100,6 @@ impl FromStr for Addrs {
             };
         }
 
-        return Ok(Self { inner });
+        Ok(Self { inner })
     }
 }

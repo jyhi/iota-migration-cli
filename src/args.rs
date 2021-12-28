@@ -11,19 +11,11 @@ pub enum ParallelMode {
 
 impl ParallelMode {
     pub fn is_parallel_seed(&self) -> bool {
-        if *self == Self::ParallelSeeds || *self == Self::ParallelAll {
-            true
-        } else {
-            false
-        }
+        *self == Self::ParallelSeeds || *self == Self::ParallelAll
     }
 
     pub fn is_parallel_search(&self) -> bool {
-        if *self == Self::ParallelSearch || *self == Self::ParallelAll {
-            true
-        } else {
-            false
-        }
+        *self == Self::ParallelSearch || *self == Self::ParallelAll
     }
 }
 
@@ -185,9 +177,7 @@ impl Args {
 
         Self {
             seeds: matches.value_of("seeds").unwrap().to_owned(),
-            addresses: matches
-                .value_of("addresses")
-                .and_then(|x| Some(x.to_owned())),
+            addresses: matches.value_of("addresses").map(|x| x.to_owned()),
             search: matches.is_present("search"),
             search_from: match matches.value_of("search-from") {
                 Some(x) => x.parse().unwrap_or_else(|e| {
@@ -217,9 +207,7 @@ impl Args {
                 }),
                 None => 2, // default
             },
-            mnemonics: matches
-                .value_of("mnemonics")
-                .and_then(|s| Some(s.to_owned())),
+            mnemonics: matches.value_of("mnemonics").map(|s| s.to_owned()),
             password: matches
                 .value_of("password")
                 .unwrap_or("drowssap")
@@ -259,11 +247,11 @@ impl Args {
                 },
                 None => 10, // default
             },
-            jobs: matches.value_of("jobs").and_then(|x| {
-                Some(x.parse().unwrap_or_else(|e| {
+            jobs: matches.value_of("jobs").map(|x| {
+                x.parse().unwrap_or_else(|e| {
                     eprintln!("Error: invalid number of jobs specified: {}: {}", e, x);
                     process::exit(1);
-                }))
+                })
             }),
             dry_run: matches.is_present("dry-run"),
             verbose: matches.is_present("verbose"),

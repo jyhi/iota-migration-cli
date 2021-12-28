@@ -12,10 +12,9 @@ use rayon::prelude::*;
 use seeds::Seeds;
 use std::{fs, io, process};
 
-const LEGACY_TESTNET_NODE_URL: &'static str = "https://nodes-legacy.iotatestmigration6.net";
-const CHRYSALIS_TESTNET_NODE_URL: &'static str =
-    "https://api.lb-0.h.migration6.iotatestmigration6.net";
-const PERMANODE_URL: &'static str = "https://chronicle.iota.org/api";
+const LEGACY_TESTNET_NODE_URL: &str = "https://nodes-legacy.iotatestmigration6.net";
+const CHRYSALIS_TESTNET_NODE_URL: &str = "https://api.lb-0.h.migration6.iotatestmigration6.net";
+const PERMANODE_URL: &str = "https://chronicle.iota.org/api";
 
 fn main() {
     env_logger::init();
@@ -59,7 +58,7 @@ fn main() {
         None
     };
 
-    let num_addrs = addrs.as_ref().and_then(|a| Some(a.len())).unwrap_or(0);
+    let num_addrs = addrs.as_ref().map(|a| a.len()).unwrap_or(0);
     info!("loaded {} addresses", num_addrs);
     trace!("{:?}", addrs);
 
@@ -97,7 +96,7 @@ fn main() {
                         return;
                     }
                     let line_lower = line.trim().to_lowercase();
-                    if line_lower == "y" || line_lower == "" {
+                    if line_lower == "y" || line_lower.is_empty() {
                         debug!("user input {} - continue", line_lower);
                         break;
                     } else if line_lower == "n" {

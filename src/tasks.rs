@@ -18,11 +18,11 @@ use log::*;
 use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
 // use iota_legacy::client::builder::Network as LegacyNetwork;
+use iota_legacy::client::migration;
+use iota_legacy::client::response::InputData;
 use iota_legacy::client::AddressInput;
 use iota_legacy::client::GetAddressesBuilder;
 use iota_legacy::transaction::bundled::{Address, BundledTransaction, BundledTransactionField};
-use iota_legacy::client::response::InputData;
-use iota_legacy::client::migration;
 
 #[allow(deprecated)]
 fn verify_address(seed: String, addr: AddrInfo, security_level: u8) -> Result<AddrInfo, ()> {
@@ -74,7 +74,7 @@ fn verify_addresses(
 
     // The task to run regardless of parallelism
     let task_addr_eq = |addr: &AddrInfo| {
-        if let Ok(vaddr) = verify_address(seed.to_string(), addr.clone(), security_level.clone()) {
+        if let Ok(vaddr) = verify_address(seed.to_string(), addr.clone(), security_level) {
             debug!("accept matching address {}", vaddr.addr);
             verified_addrs.lock().unwrap().push(vaddr);
         } else {
@@ -97,9 +97,9 @@ fn verify_addresses(
     debug!("connecting to the legacy IOTA network to check address information...");
 
     let mut legacy_client = LegacyClientBuilder::new()
-        .node(&crate::LEGACY_TESTNET_NODE_URL)
+        .node(crate::LEGACY_TESTNET_NODE_URL)
         .unwrap()
-        .permanode(&crate::PERMANODE_URL)
+        .permanode(crate::PERMANODE_URL)
         .unwrap()
         // .network(LegacyNetwork::Devnet) // ???
         .quorum(true)
@@ -189,20 +189,21 @@ fn sign_migration_bundles(
     seed: &str,
     account: &ChrysalisAccount,
     security_level: u8,
-    addr_bundles: &Vec<Vec<&AddrInfo>>,
+    addr_bundles: &[Vec<&AddrInfo>],
 ) -> Result<Vec<Vec<BundledTransaction>>, ()> {
     debug!("preparing migration bundles...");
 
     let mut legacy_client = LegacyClientBuilder::new()
-        .node(&crate::LEGACY_TESTNET_NODE_URL)
+        .node(crate::LEGACY_TESTNET_NODE_URL)
         .unwrap()
-        .permanode(&crate::PERMANODE_URL)
+        .permanode(crate::PERMANODE_URL)
         .unwrap()
         // .network(LegacyNetwork::Devnet) // ???
         .quorum(true)
         .build()
         .unwrap();
 
+    // Use the first address in the first account of the seed as the target address
     let chrysalis_addr = {
         let generated_addrs = GetAddressesBuilder::new(
             &iota_legacy::client::Seed::from_bytes(account.seed()).unwrap(),
@@ -212,8 +213,9 @@ fn sign_migration_bundles(
         .finish()
         .unwrap(); // XXX
 
-        generated_addrs.get(0).unwrap().clone()
+        generated_addrs[0]
     };
+
     info!("target Chrysalis address: {}", chrysalis_addr);
 
     let prepared_bundles: Vec<Vec<AddressInput>> = addr_bundles
@@ -231,7 +233,7 @@ fn sign_migration_bundles(
                                 .encode(),
                         )
                         .unwrap(),
-                        index: addr.idx.try_into().unwrap(), // XXX: usize -> u64
+                        index: addr.idx as u64, // XXX: usize -> u64
                         security_lvl: security_level,
                     }
                 })
@@ -244,6 +246,7 @@ fn sign_migration_bundles(
     // client instance. What is done below is to fetch this data again (it might have been fetched
     // during verify_address), and filter it, in order to make our data usable with
     // migration::create_migration_bundle().
+    // FIXME: consider merging verify_address() and sign_migration_bundles()
 
     debug!("connecting to the legacy IOTA network to check address information...");
 
@@ -254,7 +257,7 @@ fn sign_migration_bundles(
             let mut results = Vec::new();
 
             // XXX: this unfortunately cannot be parallelized, as a Mutex is not Send and cannot be
-            // used during an await, as the lock may lock forever.
+            // used during an await, the lock may lock forever.
             for bundle in prepared_bundles.into_iter() {
                 let data = legacy_client
                     .get_ledger_account_data_for_migration()
@@ -305,18 +308,18 @@ fn sign_migration_bundles(
                 .sum();
 
             let is_balance_match = input_bundle_balance == addr_bundle_balance;
-            let is_addresses_match = input_data
-                .iter()
-                .zip(addr_bundle.iter())
-                .fold(true, |acc, (input_bundle, addr_bundle)| {
+            let is_addresses_match = input_data.iter().zip(addr_bundle.iter()).fold(
+                true,
+                |acc, (input_bundle, addr_bundle)| {
                     // let is_addr_match = input_bundle.address == addr_bundle.addr; // FIXME
                     let is_idx_match = input_bundle.index == addr_bundle.idx as u64;
                     let is_bal_match = input_bundle.balance == addr_bundle.bal as u64;
 
                     acc && (is_idx_match && is_bal_match)
-                });
+                },
+            );
 
-                is_balance_match && is_addresses_match
+            is_balance_match && is_addresses_match
         })
         .map(|((_, input_data, _), _)| input_data)
         .collect();
@@ -327,9 +330,11 @@ fn sign_migration_bundles(
         let mut bundles = Vec::new();
 
         for bundle in filtered_bundles.iter() {
-            let created = async_rt.block_on(
-                migration::create_migration_bundle(&legacy_client, chrysalis_addr, bundle.clone())
-            );
+            let created = async_rt.block_on(migration::create_migration_bundle(
+                &legacy_client,
+                chrysalis_addr,
+                bundle.clone(),
+            ));
 
             bundles.push(created.unwrap()); // XXX
         }
@@ -337,27 +342,68 @@ fn sign_migration_bundles(
         bundles
     };
 
+    // sign_migration_bundle() returns Vec<BundledTransaction>...
     let signed_bundles: Vec<Vec<BundledTransaction>> = created_bundles
         .into_iter()
         .zip(filtered_bundles.into_iter())
         .map(|(created_bundle, filtered_bundle)| {
-            let ternary_seed: iota_legacy::crypto::keys::ternary::seed::Seed = seed.parse().unwrap(); // XXX
+            let ternary_seed: iota_legacy::crypto::keys::ternary::seed::Seed =
+                seed.parse().unwrap(); // XXX
             migration::sign_migration_bundle(ternary_seed, created_bundle, filtered_bundle)
         })
         .filter_map(|result| result.ok()) // XXX
         .collect();
 
-    info!("signed bundles: {:#?}", signed_bundles);
+    info!("signed {} bundles", signed_bundles.len());
 
     Ok(signed_bundles)
 }
 
-async fn send_migration_bundle() -> Result<(), ()> {
-    Ok(())
-}
+fn send_migration_bundles(
+    bundles: &[Vec<BundledTransaction>],
+    mwm: u8,
+) -> Result<Vec<Vec<BundledTransaction>>, ()> {
+    let results: Vec<_> = {
+        let async_rt = tokio::runtime::Runtime::new().unwrap();
 
-fn send_migration_bundles() -> Result<(), ()> {
-    Ok(())
+        async_rt.block_on(async {
+            let mut results = Vec::new();
+
+            for bundle in bundles {
+                let legacy_client = LegacyClientBuilder::new()
+                    .node(crate::LEGACY_TESTNET_NODE_URL)
+                    .unwrap()
+                    .permanode(crate::PERMANODE_URL)
+                    .unwrap()
+                    // .network(LegacyNetwork::Devnet) // ???
+                    .quorum(true)
+                    .build()
+                    .unwrap();
+
+                let result = legacy_client
+                    .send_trytes()
+                    .with_trytes(bundle.clone())
+                    .with_min_weight_magnitude(mwm)
+                    .finish()
+                    .await;
+
+                results.push(result);
+            }
+
+            results
+                .into_iter()
+                .filter_map(|result| match result {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        error!("failed to send a bundle: {}; ignoring", e);
+                        None
+                    }
+                })
+                .collect()
+        })
+    };
+
+    Ok(results)
 }
 
 pub fn search_and_migrate(
@@ -428,8 +474,7 @@ pub fn collect_and_migrate(
 
                     if last_sum > 1_000_000 {
                         // Push back the last segment, create a new segment
-                        let mut new = Vec::new();
-                        new.push(info);
+                        let new = vec![info];
                         new_acc.push(last);
                         new_acc.push(new);
                     } else {
@@ -439,8 +484,7 @@ pub fn collect_and_migrate(
                     }
                 } else {
                     // This is the first segment, just create and put in
-                    let mut new = Vec::new();
-                    new.push(info);
+                    let new = vec![info];
                     new_acc.push(new);
                 }
 
@@ -465,16 +509,25 @@ pub fn collect_and_migrate(
     }
 
     debug!("signing bundles");
-    let _signed_bundles = sign_migration_bundles(
-        &args,
-        &seed,
-        &account,
-        args.security_level,
-        &addr_bundles,
-    );
+    let signed_bundles =
+        match sign_migration_bundles(&args, &seed, &account, args.security_level, &addr_bundles) {
+            Ok(v) => v,
+            Err(_) => {
+                error!("failed to sign bundles");
+                return Err(());
+            }
+        };
 
-    debug!("sending bundles");
-    let _migrated_bundles = send_migration_bundles();
+    if args.dry_run {
+        debug!("dry-run - pretending that the operation has succedded");
+    } else {
+        debug!("sending bundles");
+        let migrated_bundles = send_migration_bundles(&signed_bundles, 12);
+        if let Err(_) = migrated_bundles {
+            error!("failure during sending migration bundles - some or all weren't sent.");
+            return Err(());
+        }
+    }
 
     debug!("migration finished");
 

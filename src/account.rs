@@ -24,7 +24,7 @@ impl ChrysalisAccount {
         )?;
 
         Ok(Self {
-            seed: seed,
+            seed,
             mnemonics: mnemonics.to_string(),
         })
     }
