@@ -14,7 +14,6 @@ use crypto::keys::ternary::PrivateKeyGenerator;
 use crypto::signatures::ternary::PrivateKey;
 use crypto::signatures::ternary::PublicKey;
 use iota_legacy::client::builder::ClientBuilder as LegacyClientBuilder;
-use iota_legacy::client::builder::Network as LegacyNetwork;
 use iota_legacy::client::migration;
 use iota_legacy::client::response::InputData;
 use iota_legacy::client::AddressInput;
@@ -116,7 +115,6 @@ pub fn collect_and_migrate(
         .unwrap()
         .permanode(&args.permanode)
         .unwrap()
-        .network(LegacyNetwork::Devnet) // ???
         .quorum(true)
         .build()
         .unwrap();
