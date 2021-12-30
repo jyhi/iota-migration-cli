@@ -336,7 +336,47 @@ pub fn collect_and_migrate(
 
     debug!("seed {}: signed {} bundles", seed, bundles_signed.len());
 
-    // Below are information that need to be logged regardless of dry-run or not.
+    // Send the migration bundles to the legacy network.
+    debug!("seed {}: sending bundles", seed);
+    if args.dry_run {
+        info!(
+            "seed {}: dry-run - pretending that the bundles have been sent successfully",
+            seed
+        );
+        eprintln!("> seed {}: dry-run finished", seed);
+    } else {
+        let bundles_sent = bundles_signed
+            .iter()
+            .map(|bundle| {
+                async_rt.block_on(
+                    legacy_client
+                        .send_trytes()
+                        .with_trytes(bundle.clone())
+                        .with_local_pow(true)
+                        .with_min_weight_magnitude(args.minimum_weight_magnitude)
+                        .finish(),
+                )
+            })
+            .filter_map(|result| {
+                match result {
+                    Ok(bundle) => Some(bundle),
+                    Err(err) => {
+                        // FIXME: which bundle?
+                        error!(
+                            "seed {}: failed to send a migration bundle: {}, dropping",
+                            seed, err
+                        );
+                        None
+                    }
+                }
+            })
+            .count();
+
+        debug!("seed {}: sent {} bundles", seed, bundles_sent);
+        eprintln!("> seed {}: migration finished", seed);
+    }
+
+    // Print a summary on this migration task.
     let from_addrs_info = input_data
         .iter()
         .map(|data| {
@@ -380,58 +420,18 @@ pub fn collect_and_migrate(
         })
         .unwrap_or_default();
 
-    // Send the migration bundles to the legacy network.
-    debug!("seed {}: sending bundles", seed);
-    if args.dry_run {
-        info!(
-            "seed {}: dry-run - pretending that the bundles have been sent successfully",
-            seed
-        );
-    } else {
-        let bundles_sent = bundles_signed
-            .into_iter()
-            .map(|bundle| {
-                async_rt.block_on(
-                    legacy_client
-                        .send_trytes()
-                        .with_trytes(bundle)
-                        .with_local_pow(true)
-                        .with_min_weight_magnitude(args.minimum_weight_magnitude)
-                        .finish(),
-                )
-            })
-            .filter_map(|result| {
-                match result {
-                    Ok(bundle) => Some(bundle),
-                    Err(err) => {
-                        // FIXME: which bundle?
-                        error!(
-                            "seed {}: failed to send a migration bundle: {}, dropping",
-                            seed, err
-                        );
-                        None
-                    }
-                }
-            })
-            .count();
-
-        debug!("seed {}: sent {} bundles", seed, bundles_sent);
-    }
-
     println!(
         "=== Migration Report ===\n\
-         Seed: {}\n\
-         From:{}\n\
-         To:\n\
-         - {} (legacy ternary address)\n\
-         - {} (Chrysalis address)\n\
-         Amount: {} i \n\
-         Transaction bundle hash(es):{}\n\
-         ========================",
+            Seed: {}\n\
+            From:{}\n\
+            To:\n\
+            - {} (legacy ternary address)\n\
+            - {} (Chrysalis address)\n\
+            Amount: {} i \n\
+            Transaction bundle hash(es):{}\n\
+            ========================",
         seed, from_addrs_info, to_addr_ternary, to_addr_bech32, total_amount, bundle_hashes
     );
 
-    // Voilà!
-    debug!("seed {}: migration finished", seed);
     Ok(())
 }
