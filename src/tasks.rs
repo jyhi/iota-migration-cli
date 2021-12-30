@@ -357,6 +357,28 @@ pub fn collect_and_migrate(
     )
     .unwrap();
     let to_addr_bech32 = bee_message::address::Address::Ed25519(chrysalis_addr).to_bech32("iota");
+    let bundle_hashes = bundles_signed
+        .iter()
+        .map(|bundle| {
+            format!(
+                "\n- {}",
+                bundle
+                    .first()
+                    .unwrap()
+                    .bundle()
+                    .to_inner()
+                    .encode::<iota_legacy::ternary::T3B1Buf>()
+                    .iter_trytes()
+                    .map(char::from)
+                    .collect::<String>()
+            )
+        })
+        .reduce(|mut acc, str_hash| {
+            acc.push_str(&str_hash);
+
+            acc
+        })
+        .unwrap_or_default();
 
     // Send the migration bundles to the legacy network.
     debug!("seed {}: sending bundles", seed);
@@ -365,21 +387,8 @@ pub fn collect_and_migrate(
             "seed {}: dry-run - pretending that the bundles have been sent successfully",
             seed
         );
-
-        println!(
-            "=== Migration Report ===\n\
-             Seed: {}\n\
-             From:{}\n\
-             To:\n\
-             - {} (legacy ternary address)\n\
-             - {} (Chrysalis address)\n\
-             Amount: {} i \n\
-             Transaction bundle hash(es): (dry-run)\n\
-             ========================",
-            seed, from_addrs_info, to_addr_ternary, to_addr_bech32, total_amount
-        );
     } else {
-        let bundles_sent: Vec<_> = bundles_signed
+        let bundles_sent = bundles_signed
             .into_iter()
             .map(|bundle| {
                 async_rt.block_on(
@@ -404,38 +413,23 @@ pub fn collect_and_migrate(
                     }
                 }
             })
-            .collect();
+            .count();
 
-        // Prepare bundle hashes to print out for reference.
-        let bundle_hashes = bundles_sent
-            .iter()
-            .flatten()
-            .map(|bundle| {
-                format!(
-                    "\n- {}",
-                    migration::add_tryte_checksum(bundle.address().clone()).unwrap()
-                )
-            })
-            .reduce(|mut acc, str_hash| {
-                acc.push_str(&str_hash);
-
-                acc
-            })
-            .unwrap_or_default();
-
-        println!(
-            "=== Migration Report ===\n\
-             Seed: {}\n\
-             From:{}\n\
-             To:\n\
-             - {} (legacy ternary address)\n\
-             - {} (Chrysalis address)\n\
-             Amount: {} i \n\
-             Transaction bundle hash(es): {}\n\
-             ========================",
-            seed, from_addrs_info, to_addr_ternary, to_addr_bech32, total_amount, bundle_hashes
-        );
+        debug!("seed {}: sent {} bundles", seed, bundles_sent);
     }
+
+    println!(
+        "=== Migration Report ===\n\
+         Seed: {}\n\
+         From:{}\n\
+         To:\n\
+         - {} (legacy ternary address)\n\
+         - {} (Chrysalis address)\n\
+         Amount: {} i \n\
+         Transaction bundle hash(es):{}\n\
+         ========================",
+        seed, from_addrs_info, to_addr_ternary, to_addr_bech32, total_amount, bundle_hashes
+    );
 
     // Voilà!
     debug!("seed {}: migration finished", seed);
