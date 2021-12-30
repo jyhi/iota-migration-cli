@@ -323,6 +323,36 @@ pub fn collect_and_migrate(
 
     debug!("seed {}: signed {} bundles", seed, bundles_signed.len());
 
+    // Below are information that need to be logged regardless of dry-run or not.
+    let from_addrs_info = input_data
+        .iter()
+        .map(|data| {
+            format!(
+                "\n- {} ({} i)",
+                data.address
+                    .to_inner()
+                    .encode::<iota_legacy::ternary::T3B1Buf>()
+                    .iter_trytes()
+                    .map(char::from)
+                    .collect::<String>(),
+                data.balance
+            )
+        })
+        .reduce(|mut acc, summary| {
+            acc.push_str(&summary);
+            acc
+        })
+        .unwrap_or_default();
+    let total_amount: u64 = input_data.iter().map(|data| data.balance).sum();
+    let to_addr_ternary = iota_legacy::client::migration::encode_migration_address(chrysalis_addr)
+        .unwrap()
+        .to_inner()
+        .encode::<iota_legacy::ternary::T3B1Buf>()
+        .iter_trytes()
+        .map(char::from)
+        .collect::<String>();
+    let to_addr_bech32 = bee_message::address::Address::Ed25519(chrysalis_addr).to_bech32("<hrp>");
+
     // Send the migration bundles to the legacy network.
     debug!("seed {}: sending bundles", seed);
     if args.dry_run {
@@ -331,50 +361,36 @@ pub fn collect_and_migrate(
             seed
         );
 
-        // Print out information about this transaction
-        let from_addr_summaries = input_data
-            .iter()
-            .map(|data| {
-                format!(
-                    "\n- {}",
-                    data.address
-                        .to_inner()
-                        .encode::<iota_legacy::ternary::T3B1Buf>()
-                        .as_trytes()
-                        .iter()
-                        .fold(String::new(), |mut acc, tryte| {
-                            acc.push_str(&tryte.to_string());
-                            acc
-                        })
-                )
-            })
-            .reduce(|mut acc, summary| {
-                acc.push_str(&summary);
-                acc
-            })
-            .unwrap_or_default();
-
         println!(
             "=== Migration Report ===\n\
              Seed: {}\n\
-             From (Legacy IOTA) address(es):{}\n\
-             To (Chrysalis) address: {}\n\
-             Migration bundle hash(es): (dry-run)\n\
+             From:{}\n\
+             To:\n\
+             - {} (legacy ternary address)\n\
+             - {} (Chrysalis address)\n\
+             Amount: {} i \n\
+             Transaction bundle hash(es): (dry-run)\n\
              ========================",
-            seed,
-            from_addr_summaries,
-            bee_message::address::Address::Ed25519(chrysalis_addr).to_bech32("<hrp>"),
+            seed, from_addrs_info, to_addr_ternary, to_addr_bech32, total_amount
         );
     } else {
-        let bundles_sent_results = bundles_signed.into_iter().map(|bundle| {
-            async_rt.block_on(
-                legacy_client
-                    .send_trytes()
-                    .with_trytes(bundle)
-                    .with_min_weight_magnitude(args.minimum_weight_magnitude)
-                    .finish(),
-            )
-        }); // avoid using `collect()` when not needed
+        let bundles_sent_results = bundles_signed
+            .into_iter()
+            .map(|bundle| {
+                async_rt.block_on(
+                    legacy_client
+                        .send_trytes()
+                        .with_trytes(bundle)
+                        .with_local_pow(true)
+                        .with_min_weight_magnitude(args.minimum_weight_magnitude)
+                        .finish(),
+                )
+            }) // ; // avoid using `collect()` when not needed
+            .map(|result| {
+                // Nothing to change, just print
+                trace!("{:?}", result);
+                result
+            });
 
         // Remove any error.
         let bundles_sent: Vec<_> = bundles_sent_results
@@ -393,71 +409,40 @@ pub fn collect_and_migrate(
             })
             .collect();
 
-        // Print out information about this transaction
-        let from_addr_summaries = input_data
+        // Prepare bundle hashes to print out for reference.
+        let bundle_hashes = bundles_sent
             .iter()
-            .map(|data| {
+            .flatten()
+            .map(|bundle| {
                 format!(
                     "\n- {}",
-                    data.address
+                    bundle
+                        .address()
                         .to_inner()
                         .encode::<iota_legacy::ternary::T3B1Buf>()
-                        .as_trytes()
-                        .iter()
-                        .fold(String::new(), |mut acc, tryte| {
-                            acc.push_str(&tryte.to_string());
-                            acc
-                        })
+                        .iter_trytes()
+                        .map(char::from)
+                        .collect::<String>()
                 )
             })
-            .reduce(|mut acc, summary| {
-                acc.push_str(&summary);
+            .reduce(|mut acc, str_hash| {
+                acc.push_str(&str_hash);
+
                 acc
             })
             .unwrap_or_default();
 
-        let (bundle_addresses, bundle_hashes) = bundles_sent
-            .iter()
-            .flatten()
-            .map(|bundle| {
-                (
-                    format!(
-                        "\n- {}",
-                        bundle
-                            .address()
-                            .to_inner()
-                            .encode::<iota_legacy::ternary::T3B1Buf>()
-                            .as_trytes()
-                            .iter()
-                            .fold(String::new(), |mut acc, tryte| {
-                                acc.push_str(&tryte.to_string());
-                                acc
-                            })
-                    ),
-                    format!("\n- {}", bundle.bundle()),
-                )
-            })
-            .reduce(|(mut acc_addrs, mut acc_hashes), (str_addr, str_hash)| {
-                acc_addrs.push_str(&str_addr);
-                acc_hashes.push_str(&str_hash);
-
-                (acc_addrs, acc_hashes)
-            })
-            .unwrap_or((String::new(), String::new()));
-
         println!(
             "=== Migration Report ===\n\
              Seed: {}\n\
-             From (Legacy IOTA) address(es):{}\n\
-             To (Legacy IOTA) address(es):{}\n\
-             To (Chrysalis) address: {}\n\
-             Migration bundle hash(es):{}\n\
+             From:{}\n\
+             To:\n\
+             - {} (legacy ternary address)\n\
+             - {} (Chrysalis address)\n\
+             Amount: {} i \n\
+             Transaction bundle hash(es): {}\n\
              ========================",
-            seed,
-            from_addr_summaries,
-            bundle_addresses,
-            bee_message::address::Address::Ed25519(chrysalis_addr).to_bech32("<hrp>"),
-            bundle_hashes
+            seed, from_addrs_info, to_addr_ternary, to_addr_bech32, total_amount, bundle_hashes
         );
     }
 
