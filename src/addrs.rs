@@ -1,5 +1,5 @@
 use bee_ternary::tryte::TryteBuf;
-use log::info;
+use log::*;
 use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
 
@@ -19,13 +19,13 @@ impl FromStr for AddrInfo {
             (iter.next(), iter.next(), iter.next())
         };
 
-        if addr.is_some() && idx.is_some() && bal.is_some() {
+        if let (Some(addr), Some(idx), Some(bal)) = (addr, idx, bal) {
             // XXX: TryteBuf is not Clone-able.
             // To make AddrInfo clone-able, we verify it by parsing to TryteBuf,
             // then transforming it back to String.
-            let addr_tryte = TryteBuf::try_from_str(addr.unwrap());
-            let idx_usize = idx.unwrap().parse();
-            let bal_usize = bal.unwrap().parse();
+            let addr_tryte = TryteBuf::try_from_str(addr);
+            let idx_usize = idx.parse();
+            let bal_usize = bal.parse();
 
             if addr_tryte.is_err() {
                 return Err("failed to parse the first column into a ternary address");

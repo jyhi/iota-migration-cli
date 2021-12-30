@@ -78,6 +78,9 @@ pub fn collect_and_migrate(
     seed: String,
     addrs: Addrs,
 ) -> Result<(), ()> {
+    // Tokio asynchronous runtime to wait for asynchronous code in our synchronous code.
+    let async_rt = tokio::runtime::Runtime::new().unwrap();
+
     debug!("seed {}: performing address matches", seed);
 
     // The task to run below, regardless of parallelism
@@ -145,16 +148,12 @@ pub fn collect_and_migrate(
         "seed {}: connecting to the legacy IOTA network to check address information...",
         seed
     );
-    let addrs_queried_results = {
-        let async_rt = tokio::runtime::Runtime::new().unwrap();
-
-        async_rt.block_on(
-            legacy_client
-                .get_ledger_account_data_for_migration()
-                .with_addresses(addrs_prep)
-                .finish(),
-        )
-    };
+    let addrs_queried_results = async_rt.block_on(
+        legacy_client
+            .get_ledger_account_data_for_migration()
+            .with_addresses(addrs_prep)
+            .finish(),
+    );
 
     // Exit early if there is any error. The resulting tuple is destructed then.
     let (balance, mut input_data, any_spent) = match addrs_queried_results {
@@ -253,7 +252,7 @@ pub fn collect_and_migrate(
         debug!("seed {}: no dust bundle is found", seed);
     }
 
-    // Use the first address in the first account of the Chrysalis seed as the target address.
+    // Generate the target address on Chrysalis.
     debug!("seed {}: generating target Chrysalis address...", seed);
     let chrysalis_addr = {
         let generated_addrs = GetAddressesBuilder::new(
@@ -269,23 +268,16 @@ pub fn collect_and_migrate(
 
     // Create (prepare) migration bundles using the migration facilities in the legacy client.
     debug!("seed {}: preparing migration bundles...", seed);
-    let bundles_prepared_results: Vec<_> = {
-        let async_rt = tokio::runtime::Runtime::new().unwrap();
-
-        bundles
-            .iter()
-            .map(|bundle| {
-                async_rt.block_on(migration::create_migration_bundle(
-                    &legacy_client,
-                    chrysalis_addr,
-                    bundle.clone(),
-                ))
-            })
-            .collect()
-    };
+    let bundles_prepared_results = bundles.iter().map(|bundle| {
+        async_rt.block_on(migration::create_migration_bundle(
+            &legacy_client,
+            chrysalis_addr,
+            bundle.clone(),
+        ))
+    }); // avoid using `collect()` when not needed
 
     // Remove any error.
-    let bundles_prepared = bundles_prepared_results.into_iter().filter_map(|result| {
+    let bundles_prepared = bundles_prepared_results.filter_map(|result| {
         match result {
             Ok(bundle) => Some(bundle),
             Err(err) => {
@@ -297,26 +289,23 @@ pub fn collect_and_migrate(
                 None
             }
         }
-    });
-    // .collect(); // avoid using `collect()` when not needed
+    }); // avoid using `collect()` when not needed
 
     // Sign on the migration bundles.
     debug!("seed {}: signing migration bundles...", seed);
-    let bundles_signed_results = bundles_prepared
-        // .into_iter() // avoid using `collect()` when not needed
-        .zip(bundles.into_iter())
-        .map(|(prepared_bundle, input_data)| {
-            // This is an older version of [Seed]
-            let ternary_seed: iota_legacy::crypto::keys::ternary::seed::Seed =
-                seed.parse().unwrap();
+    let bundles_signed_results =
+        bundles_prepared
+            .zip(bundles.iter())
+            .map(|(prepared_bundle, input_data)| {
+                // This is an older version of [Seed]
+                let ternary_seed: iota_legacy::crypto::keys::ternary::seed::Seed =
+                    seed.parse().unwrap();
 
-            migration::sign_migration_bundle(ternary_seed, prepared_bundle, input_data)
-        });
-    // .collect(); // avoid using `collect()` when not needed
+                migration::sign_migration_bundle(ternary_seed, prepared_bundle, input_data.clone())
+            });
 
     // Remove any error.
     let bundles_signed: Vec<_> = bundles_signed_results
-        // .into_iter() // avoid using `collect()` when not needed
         .filter_map(|result| {
             match result {
                 Ok(bundle) => Some(bundle),
@@ -346,7 +335,6 @@ pub fn collect_and_migrate(
         let from_addr_summaries = input_data
             .iter()
             .map(|data| {
-                // I need to perform this many steps to get a displayable address!
                 format!(
                     "\n- {}",
                     data.address
@@ -363,7 +351,8 @@ pub fn collect_and_migrate(
             .reduce(|mut acc, summary| {
                 acc.push_str(&summary);
                 acc
-            });
+            })
+            .unwrap_or_default();
 
         println!(
             "=== Migration Report ===\n\
@@ -373,34 +362,22 @@ pub fn collect_and_migrate(
              Migration bundle hash(es): (dry-run)\n\
              ========================",
             seed,
-            if let Some(s) = from_addr_summaries {
-                s
-            } else {
-                String::new()
-            },
-            chrysalis_addr,
+            from_addr_summaries,
+            bee_message::address::Address::Ed25519(chrysalis_addr).to_bech32("<hrp>"),
         );
     } else {
-        let bundles_sent_results: Vec<_> = {
-            let async_rt = tokio::runtime::Runtime::new().unwrap();
-
-            bundles_signed
-                .into_iter()
-                .map(|bundle| {
-                    async_rt.block_on(
-                        legacy_client
-                            .send_trytes()
-                            .with_trytes(bundle)
-                            .with_min_weight_magnitude(args.minimum_weight_magnitude)
-                            .finish(),
-                    )
-                })
-                .collect()
-        };
+        let bundles_sent_results = bundles_signed.into_iter().map(|bundle| {
+            async_rt.block_on(
+                legacy_client
+                    .send_trytes()
+                    .with_trytes(bundle)
+                    .with_min_weight_magnitude(args.minimum_weight_magnitude)
+                    .finish(),
+            )
+        }); // avoid using `collect()` when not needed
 
         // Remove any error.
         let bundles_sent: Vec<_> = bundles_sent_results
-            .into_iter()
             .filter_map(|result| {
                 match result {
                     Ok(bundle) => Some(bundle),
@@ -420,7 +397,6 @@ pub fn collect_and_migrate(
         let from_addr_summaries = input_data
             .iter()
             .map(|data| {
-                // I need to perform this many steps to get a displayable address!
                 format!(
                     "\n- {}",
                     data.address
@@ -437,36 +413,51 @@ pub fn collect_and_migrate(
             .reduce(|mut acc, summary| {
                 acc.push_str(&summary);
                 acc
-            });
+            })
+            .unwrap_or_default();
 
-        let bundle_summaries = bundles_sent
+        let (bundle_addresses, bundle_hashes) = bundles_sent
             .iter()
             .flatten()
-            .map(|bundle| format!("\n- {}", bundle.bundle()))
-            .reduce(|mut acc, summary| {
-                acc.push_str(&summary);
-                acc
-            });
+            .map(|bundle| {
+                (
+                    format!(
+                        "\n- {}",
+                        bundle
+                            .address()
+                            .to_inner()
+                            .encode::<iota_legacy::ternary::T3B1Buf>()
+                            .as_trytes()
+                            .iter()
+                            .fold(String::new(), |mut acc, tryte| {
+                                acc.push_str(&tryte.to_string());
+                                acc
+                            })
+                    ),
+                    format!("\n- {}", bundle.bundle()),
+                )
+            })
+            .reduce(|(mut acc_addrs, mut acc_hashes), (str_addr, str_hash)| {
+                acc_addrs.push_str(&str_addr);
+                acc_hashes.push_str(&str_hash);
+
+                (acc_addrs, acc_hashes)
+            })
+            .unwrap_or((String::new(), String::new()));
 
         println!(
             "=== Migration Report ===\n\
              Seed: {}\n\
              From (Legacy IOTA) address(es):{}\n\
+             To (Legacy IOTA) address(es):{}\n\
              To (Chrysalis) address: {}\n\
              Migration bundle hash(es):{}\n\
              ========================",
             seed,
-            if let Some(s) = from_addr_summaries {
-                s
-            } else {
-                String::new()
-            },
-            chrysalis_addr,
-            if let Some(s) = bundle_summaries {
-                s
-            } else {
-                String::new()
-            }
+            from_addr_summaries,
+            bundle_addresses,
+            bee_message::address::Address::Ed25519(chrysalis_addr).to_bech32("<hrp>"),
+            bundle_hashes
         );
     }
 
