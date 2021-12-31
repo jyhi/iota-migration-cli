@@ -338,20 +338,23 @@ pub fn collect_and_migrate(
 
     // Send the migration bundles to the legacy network.
     debug!("seed {}: sending bundles", seed);
-    if args.dry_run {
+    let bundles_sent = if args.dry_run {
         info!(
             "seed {}: dry-run - pretending that the bundles have been sent successfully",
             seed
         );
         eprintln!("> seed {}: dry-run finished", seed);
+
+        None
     } else {
-        let bundles_sent = bundles_signed
+        let bundles_sent: Vec<_> = bundles_signed
             .iter()
             .map(|bundle| {
                 async_rt.block_on(
                     legacy_client
                         .send_trytes()
                         .with_trytes(bundle.clone())
+                        .with_depth(2)
                         .with_local_pow(true)
                         .with_min_weight_magnitude(args.minimum_weight_magnitude)
                         .finish(),
@@ -370,11 +373,13 @@ pub fn collect_and_migrate(
                     }
                 }
             })
-            .count();
+            .collect();
 
-        debug!("seed {}: sent {} bundles", seed, bundles_sent);
-        eprintln!("> seed {}: migration finished", seed);
-    }
+        debug!("seed {}: sent {} bundles", seed, bundles_sent.len());
+        eprintln!("> seed {}: sent {} bundles", seed, bundles_sent.len());
+
+        Some(bundles_sent)
+    };
 
     // Print a summary on this migration task.
     let from_addrs_info = input_data
@@ -397,28 +402,54 @@ pub fn collect_and_migrate(
     )
     .unwrap();
     let to_addr_bech32 = bee_message::address::Address::Ed25519(chrysalis_addr).to_bech32("iota");
-    let bundle_hashes = bundles_signed
-        .iter()
-        .map(|bundle| {
-            format!(
-                "\n- {}",
-                bundle
-                    .first()
-                    .unwrap()
-                    .bundle()
-                    .to_inner()
-                    .encode::<iota_legacy::ternary::T3B1Buf>()
-                    .iter_trytes()
-                    .map(char::from)
-                    .collect::<String>()
-            )
-        })
-        .reduce(|mut acc, str_hash| {
-            acc.push_str(&str_hash);
+    let bundles_str: String = if let Some(ref bundles_sent) = bundles_sent {
+        bundles_sent
+            .iter()
+            .flatten()
+            .map(|bundle| {
+                let mut trits =
+                    iota_legacy::ternary::TritBuf::<iota_legacy::ternary::T1B1Buf>::zeros(8019); // copied from wallet.rs
+                bundle.as_trits_allocated(&mut trits);
 
-            acc
-        })
-        .unwrap_or_default();
+                format!(
+                    "\n- {}",
+                    trits
+                        .encode::<iota_legacy::ternary::T3B1Buf>()
+                        .iter_trytes()
+                        .map(char::from)
+                        .collect::<String>()
+                )
+            })
+            .collect()
+    } else {
+        Default::default()
+    };
+    let bundle_hashes: String = if let Some(ref bundles_sent) = bundles_sent {
+        bundles_sent
+            .iter()
+            .map(|bundle| {
+                format!(
+                    "\n- {}",
+                    bundle
+                        .first()
+                        .unwrap()
+                        .bundle()
+                        .to_inner()
+                        .encode::<iota_legacy::ternary::T3B1Buf>()
+                        .iter_trytes()
+                        .map(char::from)
+                        .collect::<String>()
+                )
+            })
+            .reduce(|mut acc, str_hash| {
+                acc.push_str(&str_hash);
+
+                acc
+            })
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
 
     println!(
         "=== Migration Report ===\n\
@@ -429,8 +460,15 @@ pub fn collect_and_migrate(
             - {} (Chrysalis address)\n\
             Amount: {} i \n\
             Transaction bundle hash(es):{}\n\
+            Bundle trytes:{}\n\
             ========================",
-        seed, from_addrs_info, to_addr_ternary, to_addr_bech32, total_amount, bundle_hashes
+        seed,
+        from_addrs_info,
+        to_addr_ternary,
+        to_addr_bech32,
+        total_amount,
+        bundle_hashes,
+        bundles_str
     );
 
     Ok(())
