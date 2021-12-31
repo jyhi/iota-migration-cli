@@ -405,10 +405,102 @@ pub fn collect_and_migrate(
         };
 
         debug!("seed {}: sent {} bundles", seed, bundles_sent.len());
-        eprintln!("> seed {}: sent {} bundles", seed, bundles_sent.len());
+        eprintln!(
+            "> seed {}: sent {} bundles, waiting for confirmation...",
+            seed,
+            bundles_sent.len()
+        );
 
         Some(bundles_sent)
     };
+
+    // Wait until the messages get confirmed. If not, we reattach them.
+    if let Some(ref bundles_sent) = bundles_sent {
+        debug!("seed {}: waiting for the confirmation of bundles...", seed);
+
+        // Tasks to run regardless of parallelism
+        let f_fetch = |bundle: &Vec<iota_legacy::transaction::bundled::BundledTransaction>| {
+            let bundle_hash = bundle.first().unwrap().bundle();
+            let resp_result = async_rt.block_on(
+                legacy_client
+                    .find_transactions()
+                    .bundles(&[*bundle_hash])
+                    .send(),
+            );
+
+            match resp_result {
+                Ok(resp) => {
+                    // There is only one, so we only take the first out
+                    let tx_hash = resp.hashes[0];
+                    let cfrm_result = async_rt.block_on(legacy_client.is_confirmed(&[tx_hash]));
+
+                    match cfrm_result {
+                        Ok(cfrm) => {
+                            // There is only one, so we only take the first out
+                            let is_confirmed = cfrm[0];
+
+                            (*bundle_hash, is_confirmed)
+                        }
+                        Err(err) => {
+                            warn!("seed {}: failed to check confirmation: {}", seed, err);
+
+                            (*bundle_hash, false) // XXX: what if it keeps failing?
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!("seed {}: failed to check confirmation: {}", seed, err);
+
+                    (*bundle_hash, false) // XXX: what if it keeps failing?
+                }
+            }
+        };
+
+        let f_fold = |acc,
+                      (bundle_hash, is_confirmed): (
+            iota_legacy::crypto::hashes::ternary::Hash,
+            bool,
+        )| {
+            let bundle_hash_str = bundle_hash
+                .to_inner()
+                .encode::<iota_legacy::ternary::T3B1Buf>()
+                .iter_trytes()
+                .map(char::from)
+                .collect::<String>();
+
+            if is_confirmed {
+                info!("seed {}: bundle {} is confirmed", seed, bundle_hash_str);
+            } else {
+                warn!(
+                    "seed {}: bundle {} is not yet confirmed",
+                    seed, bundle_hash_str
+                );
+            }
+
+            acc && is_confirmed
+        };
+
+        // Loop until all are confirmed. XXX: what if there are some never get confirmed?
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+
+            debug!("seed {}: checking for confirmation statuses...", seed);
+            let should_continue = if args.parallel_mode.is_parallel_search() {
+                bundles_sent
+                    .par_iter()
+                    .map(f_fetch)
+                    .fold(|| true, f_fold)
+                    .reduce(|| true, |acc, part| acc && part)
+            } else {
+                bundles_sent.iter().map(f_fetch).fold(true, f_fold)
+            };
+
+            if should_continue {
+                debug!("seed {}: all bundles confirmed, continue", seed);
+                break;
+            }
+        }
+    }
 
     // Print a summary on this migration task.
     let from_addrs_info = input_data
