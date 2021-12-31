@@ -31,3 +31,6 @@ features = [
 git = "https://github.com/iotaledger/iota.rs"
 rev = "656279e628e5f9d9288477cd4d2dc4170ea4bf0e"
 package = "iota-core"
+
+[profile.release]
+lto = true
