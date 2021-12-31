@@ -120,13 +120,13 @@ fn main() {
     }
 
     // Create a new account on Chrysalis - the target to migrate funds to,
-    // or use the provided mnemonics
-    let chrysalis_account = if let Some(ref mnemonics) = args.mnemonics {
+    // or use the provided mnemonic
+    let chrysalis_account = if let Some(ref mnemonic) = args.mnemonic {
         debug!("using the provided mnemonic for an exiting account on Chrysalis");
-        let account = ChrysalisAccount::from_mnemonics(mnemonics);
+        let account = ChrysalisAccount::from_mnemonic(mnemonic);
 
         if let Err(e) = account {
-            error!("failed to use the provided mnemonics: {:?}", e);
+            error!("failed to use the provided mnemonic: {:?}", e);
             process::exit(1);
         }
 
@@ -139,14 +139,14 @@ fn main() {
             "\n\
              !!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\
              !!! New Chrysalis Account !!!\n\
-             !!!  SAVE THE MNEMONICS!  !!!\n\
+             !!!   SAVE THE MNEMONIC!  !!!\n\
              \n\
              {}\n\
              \n\
-             !!!  SAVE THE MNEMONICS!  !!!\n\
+             !!!   SAVE THE MNEMONIC!  !!!\n\
              !!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\
             ",
-            account.mnemonics(),
+            account.mnemonic(),
         );
 
         account

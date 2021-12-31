@@ -1,7 +1,7 @@
 #[derive(Debug, Clone)]
 pub struct ChrysalisAccount {
     seed: Vec<u8>,
-    mnemonics: String,
+    mnemonic: String,
 }
 
 impl ChrysalisAccount {
@@ -9,28 +9,28 @@ impl ChrysalisAccount {
         let mut entropy = [0u8; 32];
         crypto::utils::rand::fill(&mut entropy).unwrap();
 
-        let mnemonics = crypto::keys::bip39::wordlist::encode(
+        let mnemonic = crypto::keys::bip39::wordlist::encode(
             &entropy,
             &crypto::keys::bip39::wordlist::ENGLISH,
         )
         .unwrap();
 
         let mut seed = [0u8; 64];
-        crypto::keys::bip39::mnemonic_to_seed(&mnemonics, "", &mut seed);
+        crypto::keys::bip39::mnemonic_to_seed(&mnemonic, "", &mut seed);
 
         Self {
             seed: seed.to_vec(),
-            mnemonics,
+            mnemonic,
         }
     }
 
-    pub fn from_mnemonics(mnemonics: &str) -> Result<Self, crypto::keys::bip39::wordlist::Error> {
+    pub fn from_mnemonic(mnemonic: &str) -> Result<Self, crypto::keys::bip39::wordlist::Error> {
         let mut seed = [0u8; 64];
-        crypto::keys::bip39::mnemonic_to_seed(mnemonics, "", &mut seed);
+        crypto::keys::bip39::mnemonic_to_seed(mnemonic, "", &mut seed);
 
         Ok(Self {
             seed: seed.to_vec(),
-            mnemonics: mnemonics.to_string(),
+            mnemonic: mnemonic.to_string(),
         })
     }
 
@@ -38,7 +38,7 @@ impl ChrysalisAccount {
         &self.seed
     }
 
-    pub fn mnemonics(&self) -> &str {
-        &self.mnemonics
+    pub fn mnemonic(&self) -> &str {
+        &self.mnemonic
     }
 }

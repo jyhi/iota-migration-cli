@@ -54,7 +54,7 @@ RUST_LOG='iota_migration_cli=debug' ./iota-migration-cli --seeds seeds.txt --add
 
 The full specification of `RUST_LOG` can be found [here](https://docs.rs/env_logger/latest/env_logger/#enabling-logging).
 
-Logs are output to `stderr`, while critical information (e.g. the generated Chrysalis account seed mnemonics, the migration summary) are printed to `stdout`. It's therefore critical to ensure that **the terminal has sufficient rollback buffer**; otherwise they'll be lost. One solution is to redirect `stdout`:
+Logs are output to `stderr`, while critical information (e.g. the generated Chrysalis account seed mnemonic, the migration summary) are printed to `stdout`. It's therefore critical to ensure that **the terminal has sufficient rollback buffer**; otherwise they'll be lost. One solution is to redirect `stdout`:
 
 ```sh
 ./iota-migration-cli --seeds seeds.txt --addresses addresses.txt > /tmp/summary.txt

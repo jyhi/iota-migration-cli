@@ -24,7 +24,7 @@ pub struct Args {
     pub legacy_node: String,
     pub chrysalis_node: String,
     pub permanode: String,
-    pub mnemonics: Option<String>,
+    pub mnemonic: Option<String>,
     pub target_account: usize,
     pub target_address: usize,
     pub seeds: String,
@@ -60,10 +60,10 @@ impl Args {
                     .help("Custom URL to a Permanode"),
             )
             .arg(
-                Arg::with_name("mnemonics")
-                    .long("mnemonics")
+                Arg::with_name("mnemonic")
+                    .long("mnemonic")
                     .takes_value(true)
-                    .help("Set a mnemonics of seed on Chrysalis to migrate to"),
+                    .help("Set a mnemonic of seed on Chrysalis to migrate to"),
             )
             .arg(
                 Arg::with_name("target-account")
@@ -145,7 +145,7 @@ impl Args {
                 .value_of("permanode")
                 .unwrap_or(crate::PERMANODE_URL)
                 .to_owned(),
-            mnemonics: matches.value_of("mnemonics").map(|s| s.to_owned()),
+            mnemonic: matches.value_of("mnemonic").map(|s| s.to_owned()),
             target_account: match matches.value_of("target-account") {
                 Some(x) => x.parse().unwrap_or_else(|e| {
                     eprintln!("Error: invalid target account index: {}: {}", e, x);
