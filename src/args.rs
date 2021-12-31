@@ -174,7 +174,7 @@ impl Args {
                     eprintln!("Error: invalid minimum weight of magnitude: {}: {}", e, x);
                     process::exit(1);
                 }),
-                None => 12, // default
+                None => 14, // default
             },
             parallel_mode: match matches.value_of("parallel-mode") {
                 Some("seed") => ParallelMode::ParallelSeeds,
