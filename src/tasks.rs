@@ -106,6 +106,7 @@ pub fn collect_and_migrate(
     // If all addresses are filtered out, exit early
     if addrs.is_empty() {
         warn!("seed {}: no matching address is accepted! exiting.", seed);
+        eprintln!("> seed {}: no matching address is accepted! exiting.", seed);
         return Err(());
     }
 
@@ -161,6 +162,10 @@ pub fn collect_and_migrate(
                 "seed {}: failed to fetch address information: {}",
                 seed, err
             );
+            eprintln!(
+                "> seed {}: failed to fetch address information: {}",
+                seed, err
+            );
             return Err(());
         }
     };
@@ -180,6 +185,7 @@ pub fn collect_and_migrate(
     // If there isn't any input data, then there's nothing we can do. Exit early.
     if balance == 0 || input_data.is_empty() {
         warn!("seed {}: nothing can be migrated! exiting", seed);
+        eprintln!("> seed {}: nothing can be migrated! exiting", seed);
         return Err(());
     }
 
@@ -347,33 +353,45 @@ pub fn collect_and_migrate(
 
         None
     } else {
-        let bundles_sent: Vec<_> = bundles_signed
-            .iter()
-            .map(|bundle| {
-                async_rt.block_on(
-                    legacy_client
-                        .send_trytes()
-                        .with_trytes(bundle.clone())
-                        .with_depth(2)
-                        .with_local_pow(true)
-                        .with_min_weight_magnitude(args.minimum_weight_magnitude)
-                        .finish(),
-                )
-            })
-            .filter_map(|result| {
-                match result {
-                    Ok(bundle) => Some(bundle),
-                    Err(err) => {
-                        // FIXME: which bundle?
-                        error!(
-                            "seed {}: failed to send a migration bundle: {}, dropping",
-                            seed, err
-                        );
-                        None
-                    }
+        let f_send = |bundle: &Vec<_>| {
+            async_rt.block_on(
+                legacy_client
+                    .send_trytes()
+                    .with_trytes(bundle.clone())
+                    .with_depth(2)
+                    .with_local_pow(true)
+                    .with_min_weight_magnitude(args.minimum_weight_magnitude)
+                    .finish(),
+            )
+        };
+
+        let f_filter = |result: Result<_, _>| {
+            match result {
+                Ok(bundle) => Some(bundle),
+                Err(err) => {
+                    // FIXME: which bundle?
+                    error!(
+                        "seed {}: failed to send a migration bundle: {}, dropping",
+                        seed, err
+                    );
+                    None
                 }
-            })
-            .collect();
+            }
+        };
+
+        let bundles_sent: Vec<_> = if args.parallel_mode.is_parallel_search() {
+            bundles_signed
+                .par_iter()
+                .map(f_send)
+                .filter_map(f_filter)
+                .collect()
+        } else {
+            bundles_signed
+                .iter()
+                .map(f_send)
+                .filter_map(f_filter)
+                .collect()
+        };
 
         debug!("seed {}: sent {} bundles", seed, bundles_sent.len());
         eprintln!("> seed {}: sent {} bundles", seed, bundles_sent.len());
