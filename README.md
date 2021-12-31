@@ -35,6 +35,12 @@ A few variables can be specified from the command line. Execute:
 ./iota-migration-cli --seeds seeds.txt --addresses addresses.txt --parallel-mode=all
 ```
 
+To use a different node (the default is a testnet node), use the command line option `--legacy-node`, followed by the URL to a node. For example:
+
+```sh
+./iota-migration-cli --seeds seeds.txt --addresses addresses.txt --legacy-node 'https://nodes-legacy.iotatestmigration6.net'
+```
+
 To turn on logging, the enviroment variable `RUST_LOG` needs to be specified before the invocation of migration CLI. For example:
 
 ```sh
