@@ -198,7 +198,7 @@ pub fn collect_and_migrate(
             .filter(|data| {
                 if data.spent {
                     warn!(
-                        "seed {}: address index {} has been spent, dropping",
+                        "seed {}: address {} has been spent, dropping",
                         seed,
                         migration::add_tryte_checksum(data.address.clone()).unwrap()
                     );
@@ -210,6 +210,13 @@ pub fn collect_and_migrate(
     } else {
         input_data
     };
+
+    // If there isn't any input data, then there's nothing we can do. Exit early.
+    if input_data.is_empty() {
+        warn!("seed {}: nothing can be migrated! exiting", seed);
+        eprintln!("> seed {}: nothing can be migrated! exiting", seed);
+        return Err(());
+    }
 
     // Sort addresses by their balances to ensure that addresses with small balances get bundled
     // together to try avoiding dust inputs.
