@@ -9,11 +9,11 @@ description = "A command line tool for easy migration from the legacy IOTA netwo
 bee-ternary = "0.5.2"
 clap = "2.34.0"
 env_logger = "0.9.0"
-futures = "0.3.19"
 log = "0.4.14"
 tokio = { version = "1.14.0", features = ["rt-multi-thread", "parking_lot", "macros"] }
 rayon = "1.5.1"
 bee-message = "0.1.6"
+iota-client = "1.1.1"
 
 [dependencies.iota-crypto]
 version = "0.9.1"

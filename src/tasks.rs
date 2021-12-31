@@ -13,11 +13,11 @@ use crypto::keys::ternary::wots::WotsSecurityLevel;
 use crypto::keys::ternary::PrivateKeyGenerator;
 use crypto::signatures::ternary::PrivateKey;
 use crypto::signatures::ternary::PublicKey;
+use iota_client::api::GetAddressesBuilder;
 use iota_legacy::client::builder::ClientBuilder as LegacyClientBuilder;
 use iota_legacy::client::migration;
 use iota_legacy::client::response::InputData;
 use iota_legacy::client::AddressInput;
-use iota_legacy::client::GetAddressesBuilder;
 use iota_legacy::transaction::bundled::{Address, BundledTransactionField};
 use log::*;
 use rayon::prelude::*;
@@ -288,15 +288,19 @@ pub fn collect_and_migrate(
     // Generate the target address on Chrysalis.
     debug!("seed {}: generating target Chrysalis address...", seed);
     let chrysalis_addr = {
-        let generated_addrs = GetAddressesBuilder::new(
-            &iota_legacy::client::Seed::from_bytes(account.seed()).unwrap(),
-        )
-        .with_account_index(args.target_account)
-        .with_range(args.target_address..args.target_address + 1)
-        .finish()
-        .unwrap(); // XXX
+        let generated_addrs = async_rt
+            .block_on(
+                GetAddressesBuilder::new(&iota_client::Seed::from_bytes(account.seed()))
+                    .with_account_index(args.target_account)
+                    .with_range(args.target_address..args.target_address + 1)
+                    .get_all_raw(),
+            )
+            .unwrap();
 
-        generated_addrs[0]
+        // Unwrap the address
+        let bee_message::address::Address::Ed25519(address) = generated_addrs[0].0;
+
+        address
     };
 
     // Create (prepare) migration bundles using the migration facilities in the legacy client, then
