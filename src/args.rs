@@ -145,7 +145,17 @@ impl Args {
                 .value_of("permanode")
                 .unwrap_or(crate::PERMANODE_URL)
                 .to_owned(),
-            mnemonic: matches.value_of("mnemonic").map(|s| s.to_owned()),
+            mnemonic: match matches.value_of("mnemonic") {
+                Some(mnemonic) => {
+                    crypto::keys::bip39::wordlist::verify(
+                        mnemonic.trim(),
+                        &crypto::keys::bip39::wordlist::ENGLISH,
+                    )
+                    .unwrap();
+                    Some(mnemonic.trim().to_owned())
+                }
+                None => None,
+            },
             target_account: match matches.value_of("target-account") {
                 Some(x) => x.parse().unwrap_or_else(|e| {
                     eprintln!("Error: invalid target account index: {}: {}", e, x);
