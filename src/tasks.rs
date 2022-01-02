@@ -18,7 +18,7 @@ use iota_legacy::client::builder::ClientBuilder as LegacyClientBuilder;
 use iota_legacy::client::migration;
 use iota_legacy::client::response::InputData;
 use iota_legacy::client::AddressInput;
-use iota_legacy::transaction::bundled::{Address, BundledTransactionField};
+use iota_legacy::transaction::bundled::{Address, BundledTransaction, BundledTransactionField};
 use log::*;
 use rayon::prelude::*;
 
@@ -418,86 +418,124 @@ pub fn collect_and_migrate(
     if let Some(ref bundles_sent) = bundles_sent {
         debug!("seed {}: waiting for the confirmation of bundles...", seed);
 
+        // Keep the starting time. If any bundle is not confirmed after 3 minutes, we perform a
+        // reattachment.
+        let mut time = std::time::Instant::now();
+
         // Tasks to run regardless of parallelism
-        let f_fetch = |bundle: &Vec<iota_legacy::transaction::bundled::BundledTransaction>| {
-            let bundle_hash = bundle.first().unwrap().bundle();
-            let resp_result = async_rt.block_on(
+        let f_partbndl = |txs: &&Vec<BundledTransaction>| {
+            let bundle_hash = txs.first().unwrap().bundle();
+            let response = async_rt.block_on(
                 legacy_client
                     .find_transactions()
                     .bundles(&[*bundle_hash])
                     .send(),
             );
 
-            match resp_result {
-                Ok(resp) => {
-                    // There is only one, so we only take the first out
-                    let tx_hash = resp.hashes[0];
-                    let cfrm_result = async_rt.block_on(legacy_client.is_confirmed(&[tx_hash]));
+            match response {
+                Ok(response) => {
+                    let tx_hash = response.hashes[0];
+                    let tx_hash_str = tx_hash
+                        .encode::<iota_legacy::ternary::T3B1Buf>()
+                        .iter_trytes()
+                        .map(char::from)
+                        .collect::<String>();
+                    let response = async_rt.block_on(legacy_client.is_confirmed(&[tx_hash]));
 
-                    match cfrm_result {
-                        Ok(cfrm) => {
-                            // There is only one, so we only take the first out
-                            let is_confirmed = cfrm[0];
-
-                            (*bundle_hash, is_confirmed)
-                        }
-                        Err(err) => {
-                            warn!("seed {}: failed to check confirmation: {}", seed, err);
-
-                            (*bundle_hash, false) // XXX: what if it keeps failing?
+                    match response {
+                        Ok(is_confirmed) => is_confirmed[0],
+                        Err(error) => {
+                            warn!(
+                                "seed {}: failed to query confirmation status for bundle {}: {}",
+                                seed, tx_hash_str, error
+                            );
+                            false // treat it as unconfirmed
                         }
                     }
                 }
-                Err(err) => {
-                    warn!("seed {}: failed to check confirmation: {}", seed, err);
-
-                    (*bundle_hash, false) // XXX: what if it keeps failing?
+                Err(error) => {
+                    // FIXME: which bundle? We don't know the tx hash yet here!
+                    warn!(
+                        "seed {}: failed to query confirmation status: {}",
+                        seed, error
+                    );
+                    false
                 }
             }
-        };
-
-        let f_fold = |acc,
-                      (bundle_hash, is_confirmed): (
-            iota_legacy::crypto::hashes::ternary::Hash,
-            bool,
-        )| {
-            let bundle_hash_str = bundle_hash
-                .to_inner()
-                .encode::<iota_legacy::ternary::T3B1Buf>()
-                .iter_trytes()
-                .map(char::from)
-                .collect::<String>();
-
-            if is_confirmed {
-                info!("seed {}: bundle {} is confirmed", seed, bundle_hash_str);
-            } else {
-                warn!(
-                    "seed {}: bundle {} is not yet confirmed",
-                    seed, bundle_hash_str
-                );
-            }
-
-            acc && is_confirmed
         };
 
         // Loop until all are confirmed. XXX: what if there are some never get confirmed?
         loop {
+            // Wait for 10 seconds before and during checks
             std::thread::sleep(std::time::Duration::from_secs(10));
 
+            // We don't actually need to look at confirmed bundles any more; using partition() is
+            // just for easier filtering.
             debug!("seed {}: checking for confirmation statuses...", seed);
-            let should_continue = if args.parallel_mode.is_parallel_search() {
-                bundles_sent
-                    .par_iter()
-                    .map(f_fetch)
-                    .fold(|| true, f_fold)
-                    .reduce(|| true, |acc, part| acc && part)
-            } else {
-                bundles_sent.iter().map(f_fetch).fold(true, f_fold)
-            };
+            let (_, bundles_unconfirmed): (Vec<_>, Vec<_>) =
+                if args.parallel_mode.is_parallel_search() {
+                    bundles_sent.par_iter().partition(f_partbndl)
+                } else {
+                    bundles_sent.iter().partition(f_partbndl)
+                };
 
-            if should_continue {
+            if bundles_unconfirmed.is_empty() {
                 debug!("seed {}: all bundles confirmed, continue", seed);
                 break;
+            }
+
+            // Otherwise, we check if it has been 3 minutes. If so, we reattch all unconfirmed
+            // bundles; otherwise, just continue the loop.
+            if time.elapsed().as_secs() > 180 {
+                debug!("seed {}: unconfirmed bundles will be reattached", seed);
+
+                bundles_unconfirmed
+                    .iter()
+                    .map(|bundle| {
+                        let hash = bundle.first().unwrap().bundle();
+                        let hash_str = hash
+                            .encode::<iota_legacy::ternary::T3B1Buf>()
+                            .iter_trytes()
+                            .map(char::from)
+                            .collect::<String>();
+
+                        debug!("seed {}: reattaching bundle {}", seed, hash_str);
+
+                        // Why we have an async fn here?
+                        let builder = async_rt.block_on(legacy_client.reattach(hash));
+
+                        async_rt.block_on(
+                            builder
+                                .unwrap() // XXX: what would happen here?
+                                .with_depth(2)
+                                .with_min_weight_magnitude(args.minimum_weight_magnitude)
+                                .with_local_pow(true)
+                                .finish(),
+                        )
+                    })
+                    .for_each(|result| {
+                        match result {
+                            Ok(vec_tx) => {
+                                let hash_str = vec_tx
+                                    .first()
+                                    .unwrap()
+                                    .bundle()
+                                    .encode::<iota_legacy::ternary::T3B1Buf>()
+                                    .iter_trytes()
+                                    .map(char::from)
+                                    .collect::<String>();
+
+                                debug!("seed {}: reattached bundle {}", seed, hash_str);
+                            }
+                            Err(err) => {
+                                // XXX: which bundle?
+                                warn!("seed {}: failed to reattach a bundle: {}", seed, err);
+                            }
+                        }
+                    });
+
+                // Update the timer
+                time = std::time::Instant::now();
             }
         }
     }
