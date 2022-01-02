@@ -1,4 +1,4 @@
-use bee_ternary::tryte::TryteBuf;
+use iota_legacy::ternary::tryte::TryteBuf;
 use log::*;
 use std::ops::{Deref, DerefMut};
 use std::str::FromStr;

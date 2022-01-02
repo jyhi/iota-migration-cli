@@ -1,6 +1,6 @@
 #[derive(Debug, Clone)]
 pub struct ChrysalisAccount {
-    seed: Vec<u8>,
+    seed: [u8; 64],
     mnemonic: String,
 }
 
@@ -18,10 +18,7 @@ impl ChrysalisAccount {
         let mut seed = [0u8; 64];
         crypto::keys::bip39::mnemonic_to_seed(&mnemonic, "", &mut seed);
 
-        Self {
-            seed: seed.to_vec(),
-            mnemonic,
-        }
+        Self { seed, mnemonic }
     }
 
     pub fn from_mnemonic(mnemonic: &str) -> Result<Self, crypto::keys::bip39::wordlist::Error> {
@@ -30,11 +27,12 @@ impl ChrysalisAccount {
             &crypto::keys::bip39::wordlist::ENGLISH,
         )
         .unwrap();
+
         let mut seed = [0u8; 64];
         crypto::keys::bip39::mnemonic_to_seed(mnemonic.trim(), "", &mut seed);
 
         Ok(Self {
-            seed: seed.to_vec(),
+            seed,
             mnemonic: mnemonic.to_string(),
         })
     }

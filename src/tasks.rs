@@ -1,36 +1,31 @@
 use crate::account::ChrysalisAccount;
 use crate::addrs::{AddrInfo, Addrs};
 use crate::args::Args;
-use bee_ternary::t1b1::T1B1Buf;
-use bee_ternary::tryte::TryteBuf;
-#[allow(deprecated)]
-use crypto::hashes::ternary::kerl::Kerl;
-use crypto::keys::ternary::seed::Seed;
-#[allow(deprecated)]
-use crypto::keys::ternary::wots::sponge::WotsSpongePrivateKeyGeneratorBuilder;
-#[allow(deprecated)]
-use crypto::keys::ternary::wots::WotsSecurityLevel;
-use crypto::keys::ternary::PrivateKeyGenerator;
-use crypto::signatures::ternary::PrivateKey;
-use crypto::signatures::ternary::PublicKey;
-use iota_client::api::GetAddressesBuilder;
 use iota_legacy::client::builder::ClientBuilder as LegacyClientBuilder;
+use iota_legacy::client::chrysalis2::GetAddressesBuilder;
 use iota_legacy::client::migration;
+use iota_legacy::client::migration::encode_migration_address;
 use iota_legacy::client::response::InputData;
 use iota_legacy::client::AddressInput;
+#[allow(deprecated)]
+use iota_legacy::crypto::hashes::ternary::kerl::Kerl;
+use iota_legacy::crypto::keys::ternary::seed::Seed;
+#[allow(deprecated)]
+use iota_legacy::crypto::keys::ternary::wots::sponge::WotsSpongePrivateKeyGeneratorBuilder;
+#[allow(deprecated)]
+use iota_legacy::crypto::keys::ternary::wots::WotsSecurityLevel;
+use iota_legacy::crypto::keys::ternary::PrivateKeyGenerator;
+use iota_legacy::crypto::signatures::ternary::PrivateKey;
+use iota_legacy::crypto::signatures::ternary::PublicKey;
+use iota_legacy::ternary::{T1B1Buf, T3B1Buf};
+use iota_legacy::ternary::{TritBuf, TryteBuf};
 use iota_legacy::transaction::bundled::{Address, BundledTransaction, BundledTransactionField};
 use log::*;
 use rayon::prelude::*;
 
 #[allow(deprecated)]
 fn verify_address(seed: String, addr: AddrInfo, security_level: u8) -> Result<AddrInfo, ()> {
-    let seed_ternary = Seed::from_trits(
-        TryteBuf::try_from_str(&seed)
-            .unwrap() // we've validated it during file parsing
-            .as_trits()
-            .encode::<T1B1Buf>(),
-    )
-    .unwrap();
+    let seed_ternary: Seed = seed.parse().unwrap();
 
     let security_level_wot = match security_level {
         1 => WotsSecurityLevel::Low,
@@ -128,7 +123,7 @@ pub fn collect_and_migrate(
             AddressInput {
                 address: Address::try_from_inner(
                     // Have to use a legacy bee_ternary because of the legacy client!
-                    iota_legacy::ternary::TryteBuf::try_from_str(&addr.addr)
+                    TryteBuf::try_from_str(&addr.addr)
                         .unwrap()
                         .as_trits()
                         .encode(),
@@ -288,19 +283,16 @@ pub fn collect_and_migrate(
     // Generate the target address on Chrysalis.
     debug!("seed {}: generating target Chrysalis address...", seed);
     let chrysalis_addr = {
-        let generated_addrs = async_rt
-            .block_on(
-                GetAddressesBuilder::new(&iota_client::Seed::from_bytes(account.seed()))
-                    .with_account_index(args.target_account)
-                    .with_range(args.target_address..args.target_address + 1)
-                    .get_all_raw(),
-            )
-            .unwrap();
+        // This is a different [Seed]!
+        let generated_addrs = GetAddressesBuilder::new(
+            &iota_legacy::client::Seed::from_bytes(account.seed()).unwrap(),
+        )
+        .with_account_index(args.target_account)
+        .with_range(args.target_address..args.target_address + 1)
+        .finish()
+        .unwrap();
 
-        // Unwrap the address
-        let bee_message::address::Address::Ed25519(address) = generated_addrs[0].0;
-
-        address
+        generated_addrs[0]
     };
 
     // Create (prepare) migration bundles using the migration facilities in the legacy client, then
@@ -330,9 +322,7 @@ pub fn collect_and_migrate(
         })
         .zip(bundles.iter())
         .map(|(prepared_bundle, input_data)| {
-            // This is an older version of [Seed]
-            let ternary_seed: iota_legacy::crypto::keys::ternary::seed::Seed =
-                seed.parse().unwrap();
+            let ternary_seed: Seed = seed.parse().unwrap();
 
             migration::sign_migration_bundle(ternary_seed, prepared_bundle, input_data.clone())
         })
@@ -436,7 +426,7 @@ pub fn collect_and_migrate(
                 Ok(response) => {
                     let tx_hash = response.hashes[0];
                     let tx_hash_str = tx_hash
-                        .encode::<iota_legacy::ternary::T3B1Buf>()
+                        .encode::<T3B1Buf>()
                         .iter_trytes()
                         .map(char::from)
                         .collect::<String>();
@@ -494,7 +484,7 @@ pub fn collect_and_migrate(
                     .map(|bundle| {
                         let hash = bundle.first().unwrap().bundle();
                         let hash_str = hash
-                            .encode::<iota_legacy::ternary::T3B1Buf>()
+                            .encode::<T3B1Buf>()
                             .iter_trytes()
                             .map(char::from)
                             .collect::<String>();
@@ -520,7 +510,7 @@ pub fn collect_and_migrate(
                                     .first()
                                     .unwrap()
                                     .bundle()
-                                    .encode::<iota_legacy::ternary::T3B1Buf>()
+                                    .encode::<T3B1Buf>()
                                     .iter_trytes()
                                     .map(char::from)
                                     .collect::<String>();
@@ -556,24 +546,21 @@ pub fn collect_and_migrate(
         })
         .unwrap_or_default();
     let total_amount: u64 = input_data.iter().map(|data| data.balance).sum();
-    let to_addr_ternary = migration::add_tryte_checksum(
-        iota_legacy::client::migration::encode_migration_address(chrysalis_addr).unwrap(),
-    )
-    .unwrap();
-    let to_addr_bech32 = bee_message::address::Address::Ed25519(chrysalis_addr).to_bech32("iota");
+    let to_addr_ternary =
+        migration::add_tryte_checksum(encode_migration_address(chrysalis_addr).unwrap()).unwrap();
+    let to_addr_bech32 = migration::Address::Ed25519(chrysalis_addr).to_bech32("iota");
     let bundles_str: String = if let Some(ref bundles_sent) = bundles_sent {
         bundles_sent
             .iter()
             .flatten()
             .map(|bundle| {
-                let mut trits =
-                    iota_legacy::ternary::TritBuf::<iota_legacy::ternary::T1B1Buf>::zeros(8019); // copied from wallet.rs
+                let mut trits = TritBuf::<T1B1Buf>::zeros(8019); // copied from wallet.rs
                 bundle.as_trits_allocated(&mut trits);
 
                 format!(
                     "\n- {}",
                     trits
-                        .encode::<iota_legacy::ternary::T3B1Buf>()
+                        .encode::<T3B1Buf>()
                         .iter_trytes()
                         .map(char::from)
                         .collect::<String>()
@@ -594,7 +581,7 @@ pub fn collect_and_migrate(
                         .unwrap()
                         .bundle()
                         .to_inner()
-                        .encode::<iota_legacy::ternary::T3B1Buf>()
+                        .encode::<T3B1Buf>()
                         .iter_trytes()
                         .map(char::from)
                         .collect::<String>()
