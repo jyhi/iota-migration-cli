@@ -288,7 +288,6 @@ pub fn collect_and_migrate(
             GetAddressesBuilder::new(&iota_client::Seed::from_bytes(account.seed()))
                 .with_account_index(args.target_account)
                 .with_range(args.target_address..args.target_address + 1)
-                .with_bech32_hrp("iota".into())
                 .get_all_raw(),
         );
 
