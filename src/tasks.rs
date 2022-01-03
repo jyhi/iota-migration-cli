@@ -2,7 +2,6 @@ use crate::account::ChrysalisAccount;
 use crate::addrs::{AddrInfo, Addrs};
 use crate::args::Args;
 use iota_client::api::GetAddressesBuilder;
-use iota_client::bee_message::address::Ed25519Address;
 use iota_legacy::client::builder::ClientBuilder as LegacyClientBuilder;
 use iota_legacy::client::migration;
 use iota_legacy::client::migration::encode_migration_address;
@@ -289,12 +288,14 @@ pub fn collect_and_migrate(
             GetAddressesBuilder::new(&iota_client::Seed::from_bytes(account.seed()))
                 .with_account_index(args.target_account)
                 .with_range(args.target_address..args.target_address + 1)
-                .finish(),
+                .with_bech32_hrp("iota".into())
+                .get_all_raw(),
         );
 
-        generated_addrs.unwrap()[0]
-            .parse::<Ed25519Address>()
-            .unwrap()
+        let iota_client::bee_message::address::Address::Ed25519(address) =
+            generated_addrs.unwrap()[0].0;
+
+        address
     };
 
     // Create (prepare) migration bundles using the migration facilities in the legacy client, then
