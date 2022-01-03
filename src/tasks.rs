@@ -1,8 +1,9 @@
 use crate::account::ChrysalisAccount;
 use crate::addrs::{AddrInfo, Addrs};
 use crate::args::Args;
+use iota_client::api::GetAddressesBuilder;
+use iota_client::bee_message::address::Ed25519Address;
 use iota_legacy::client::builder::ClientBuilder as LegacyClientBuilder;
-use iota_legacy::client::chrysalis2::GetAddressesBuilder;
 use iota_legacy::client::migration;
 use iota_legacy::client::migration::encode_migration_address;
 use iota_legacy::client::response::InputData;
@@ -283,16 +284,17 @@ pub fn collect_and_migrate(
     // Generate the target address on Chrysalis.
     debug!("seed {}: generating target Chrysalis address...", seed);
     let chrysalis_addr = {
-        // This is a different [Seed]!
-        let generated_addrs = GetAddressesBuilder::new(
-            &iota_legacy::client::Seed::from_bytes(account.seed()).unwrap(),
-        )
-        .with_account_index(args.target_account)
-        .with_range(args.target_address..args.target_address + 1)
-        .finish()
-        .unwrap();
+        let generated_addrs = async_rt.block_on(
+            // This is a different [Seed]!
+            GetAddressesBuilder::new(&iota_client::Seed::from_bytes(account.seed()))
+                .with_account_index(args.target_account)
+                .with_range(args.target_address..args.target_address + 1)
+                .finish(),
+        );
 
-        generated_addrs[0]
+        generated_addrs.unwrap()[0]
+            .parse::<Ed25519Address>()
+            .unwrap()
     };
 
     // Create (prepare) migration bundles using the migration facilities in the legacy client, then
