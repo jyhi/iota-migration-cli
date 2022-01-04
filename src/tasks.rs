@@ -280,6 +280,19 @@ pub fn collect_and_migrate(
         debug!("seed {}: no dust bundle is found", seed);
     }
 
+    // If all bundles are dust (filtered out), exit early
+    if bundles.is_empty() {
+        warn!(
+            "seed {}: no bundle can be migrated due to dust prevention! exiting.",
+            seed
+        );
+        eprintln!(
+            "> seed {}: no bundle can be migrated due to dust prevention! exiting.",
+            seed
+        );
+        return Err(());
+    }
+
     // Generate the target address on Chrysalis.
     debug!("seed {}: generating target Chrysalis address...", seed);
     let chrysalis_addr = {
