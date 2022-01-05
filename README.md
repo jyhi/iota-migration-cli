@@ -38,7 +38,7 @@ A few variables can be specified from the command line. Execute:
 To use a different node (the default is a testnet node), use the command line option `--legacy-node`, followed by the URL to a node. For example:
 
 ```sh
-./iota-migration-cli --seeds seeds.txt --addresses addresses.txt --legacy-node 'https://nodes-legacy.iotatestmigration6.net'
+./iota-migration-cli --seeds seeds.txt --addresses addresses.txt --legacy-node 'https://nodes-legacy.iotatestmigration6.net' --bech32-address 'iota1qqv3lpmdpxc7gd4d0cs5cft05h37heyc4lewpyy0verzjhzlpyrgx3pygp0'
 ```
 
 To turn on logging, the enviroment variable `RUST_LOG` needs to be specified before the invocation of migration CLI. For example:
@@ -54,7 +54,7 @@ RUST_LOG='iota_migration_cli=debug' ./iota-migration-cli --seeds seeds.txt --add
 
 The full specification of `RUST_LOG` can be found [here](https://docs.rs/env_logger/latest/env_logger/#enabling-logging).
 
-Logs are output to `stderr`, while critical information (e.g. the generated Chrysalis account seed mnemonic, the migration summary) are printed to `stdout`. It's therefore critical to ensure that **the terminal has sufficient rollback buffer**; otherwise they'll be lost. One solution is to redirect `stdout`:
+Logs are output to `stderr`, while critical information (e.g. the migration summary) are printed to `stdout`. It's therefore critical to ensure that **the terminal has sufficient rollback buffer**; otherwise they'll be lost. One solution is to redirect `stdout`:
 
 ```sh
 ./iota-migration-cli --seeds seeds.txt --addresses addresses.txt > /tmp/summary.txt

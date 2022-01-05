@@ -24,7 +24,7 @@ pub struct Args {
     pub legacy_node: String,
     pub chrysalis_node: String,
     pub permanode: String,
-    pub mnemonic: Option<String>,
+    pub bech32address: Option<String>,
     pub target_account: usize,
     pub target_address: usize,
     pub seeds: String,
@@ -60,10 +60,11 @@ impl Args {
                     .help("Custom URL to a Permanode"),
             )
             .arg(
-                Arg::with_name("mnemonic")
-                    .long("mnemonic")
+                Arg::with_name("bech32-address")
+                    .long("bech32-address")
                     .takes_value(true)
-                    .help("Set a mnemonic of seed on Chrysalis to migrate to"),
+                    .required(true)
+                    .help("Set a bech32address from Chrysalis to migrate to"),
             )
             .arg(
                 Arg::with_name("target-account")
@@ -145,17 +146,9 @@ impl Args {
                 .value_of("permanode")
                 .unwrap_or(crate::PERMANODE_URL)
                 .to_owned(),
-            mnemonic: match matches.value_of("mnemonic") {
-                Some(mnemonic) => {
-                    crypto::keys::bip39::wordlist::verify(
-                        mnemonic.trim(),
-                        &crypto::keys::bip39::wordlist::ENGLISH,
-                    )
-                    .unwrap();
-                    Some(mnemonic.trim().to_owned())
-                }
-                None => None,
-            },
+            bech32address: matches
+                .value_of("bech32-address")
+                .map(|bech32address| bech32address.trim().to_owned()),
             target_account: match matches.value_of("target-account") {
                 Some(x) => x.parse().unwrap_or_else(|e| {
                     eprintln!("Error: invalid target account index: {}: {}", e, x);

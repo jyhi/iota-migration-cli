@@ -120,36 +120,20 @@ fn main() {
     }
 
     // Create a new account on Chrysalis - the target to migrate funds to,
-    // or use the provided mnemonic
-    let chrysalis_account = if let Some(ref mnemonic) = args.mnemonic {
-        debug!("using the provided mnemonic for an exiting account on Chrysalis");
-        let account = ChrysalisAccount::from_mnemonic(mnemonic);
+    // with the provided address
+    let chrysalis_account = if let Some(ref bech32_address) = args.bech32address {
+        debug!("using the provided address for an exiting account on Chrysalis");
+        let account = ChrysalisAccount::from_bech32_address(bech32_address);
 
         if let Err(e) = account {
-            error!("failed to use the provided mnemonic: {:?}", e);
+            error!("failed to use the provided address: {:?}", e);
             process::exit(1);
         }
 
         account.unwrap()
     } else {
-        debug!("creating an account on Chrysalis");
-        let account = ChrysalisAccount::new();
-
-        println!(
-            "\n\
-             !!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\
-             !!! New Chrysalis Account !!!\n\
-             !!!   SAVE THE MNEMONIC!  !!!\n\
-             \n\
-             {}\n\
-             \n\
-             !!!   SAVE THE MNEMONIC!  !!!\n\
-             !!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\
-            ",
-            account.mnemonic(),
-        );
-
-        account
+        error!("No Chrysalis bech32address provided");
+        process::exit(1);
     };
 
     // This is the closure to run regardless of parallel or sequential
